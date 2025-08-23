@@ -9,8 +9,8 @@ from flask import Flask, request
 from telebot import types
 
 # === CONFIG (hardcoded) ===
-BOT_TOKEN = "7638935379:AAEmLD7JHLZ36Ywh5tvmlP1F8xzrcNrym_Q"
-WEBHOOK_URL = "https://shayobott.onrender.com/" + BOT_TOKEN 
+BOT_TOKEN = os.environ.get("7638935379:AAEmLD7JHLZ36Ywh5tvmlP1F8xzrcNrym_Q")
+WEBHOOK_URL = "https://shayobot.onrender.com/" + BOT_TOKEN
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # Default portfolio and watchlist
@@ -63,15 +63,37 @@ def generate_signal(symbol, interval):
     last_price = prices[-1]
     if rsi is None or macd is None: return None
 
-    if rsi < 30: base_signal = "💚 STRONG BUY"
-    elif rsi < 40: base_signal = "✅ BUY"
-    elif rsi > 70: base_signal = "💔 STRONG SELL"
-    elif rsi > 60: base_signal = "❌ SELL"
-    else: return None
+    # Determine base signal by RSI
+    if rsi < 30:
+        base_signal = "💚 STRONG BUY"
+        rsi_strength = "strong"
+    elif rsi < 40:
+        base_signal = "✅ BUY"
+        rsi_strength = "normal"
+    elif rsi > 70:
+        base_signal = "💔 STRONG SELL"
+        rsi_strength = "strong"
+    elif rsi > 60:
+        base_signal = "❌ SELL"
+        rsi_strength = "normal"
+    else:
+        return None
 
+    # Determine trend by MACD
     trend = ""
-    if macd > signal_line: trend = " (MACD Bullish)"
-    elif macd < signal_line: trend = " (MACD Bearish)"
+    macd_trend = ""
+    if macd > signal_line:
+        trend = " (MACD Bullish)"
+        macd_trend = "bullish"
+    elif macd < signal_line:
+        trend = " (MACD Bearish)"
+        macd_trend = "bearish"
+
+    # Upgrade signal to VERY STRONG if both RSI and MACD confirm
+    if rsi_strength == "strong":
+        if (base_signal.startswith("💚") and macd_trend == "bullish") or \
+           (base_signal.startswith("💔") and macd_trend == "bearish"):
+            base_signal = "💎 VERY STRONG " + base_signal.split(" ")[-1]  # e.g., 💎 VERY STRONG BUY
 
     return f"{base_signal} — {symbol} {interval} | Price: {last_price:.2f}, RSI={rsi:.2f}{trend}"
 
@@ -80,45 +102,38 @@ def top_movers(limit=5):
         r = requests.get(f"{BASE_URL}/ticker/24hr", timeout=5).json()
         movers_1h = sorted(r, key=lambda x: abs(float(x["priceChangePercent"])), reverse=True)[:limit]
         movers_24h = sorted(r, key=lambda x: abs(float(x["priceChangePercent"])), reverse=True)[:limit]
-        msg = "🚀 *Top Movers*
-
-⏱ *1 Hour Movers:*
-"
+        msg = "🚀 *Top Movers*\\n\\n⏱ *1 Hour Movers:*\\n"
         for sym in movers_1h:
-            msg += f"{sym['symbol']}: {float(sym['priceChangePercent']):+.2f}%\n"
-        msg += "
-📅 *24 Hour Movers:*
-"
+            msg += f"{sym['symbol']}: {float(sym['priceChangePercent']):+.2f}%\\n"
+        msg += "\\n📅 *24 Hour Movers:*\\n"
         for sym in movers_24h:
-            msg += f"{sym['symbol']}: {float(sym['priceChangePercent']):+.2f}%\n"
+            msg += f"{sym['symbol']}: {float(sym['priceChangePercent']):+.2f}%\\n"
         return msg
     except:
         return "Error fetching movers"
 
 def get_portfolio_summary():
     total = 0
-    text = "📊 *Your Portfolio:*
-
-"
+    text = "📊 *Your Portfolio:*\\n\\n"
     for coin, qty in portfolio.items():
         price, change = fetch_price(coin)
         if price:
             value = qty * price
             total += value
-            text += f"{coin[:-4]}: {qty} × ${price:.2f} = ${value:.2f} ({change:.2f}% 24h)\n"
-        else: text += f"{coin}: Error fetching price\n"
-    text += f"\n💰 Total Portfolio Value: ${total:.2f}"
+            text += f"{coin[:-4]}: {qty} × ${price:.2f} = ${value:.2f} ({change:.2f}% 24h)\\n"
+        else: text += f"{coin}: Error fetching price\\n"
+    text += f"\\n💰 Total Portfolio Value: ${total:.2f}"
     return text
 
 def get_signals_text():
-    text = "📊 *Technical Analysis Signals*\n\n"
+    text = "📊 *Technical Analysis Signals*\\n\\n"
     for sym in watchlist:
-        text += f"🔹 {sym}\n"
+        text += f"🔹 {sym}\\n"
         for interval in ["1m","5m","15m","1h","4h","1d"]:
             sig = generate_signal(sym, interval)
             clean_sig = sig.split("—")[0].strip() + " | " + sig.split("|")[1].strip() if sig else "No clear signal"
-            text += f"   ⏱ {interval}: {clean_sig}\n"
-        text += "\n"
+            text += f"   ⏱ {interval}: {clean_sig}\\n"
+        text += "\\n"
     return text
 
 # === DASHBOARD ===
@@ -136,7 +151,7 @@ def dashboard(message):
         types.InlineKeyboardButton("🔕 Signals OFF", callback_data="signals_off"),
         types.InlineKeyboardButton("🔄 Refresh Dashboard", callback_data="refresh_dashboard")
     )
-    bot.send_message(message.chat.id, "📌 *Crypto Dashboard*\n\nChoose an option:", reply_markup=markup, parse_mode="Markdown")
+    bot.send_message(message.chat.id, "📌 *Crypto Dashboard*\\n\\nChoose an option:", reply_markup=markup, parse_mode="Markdown")
 
 # === CALLBACK HANDLER ===
 @bot.callback_query_handler(func=lambda call: True)
@@ -167,7 +182,7 @@ def callback_handler(call):
         text = ""
         for sym in watchlist:
             price, change = fetch_price(sym)
-            if price: text += f"{sym}: ${price:.2f} ({change:+.2f}% 24h)\n"
+            if price: text += f"{sym}: ${price:.2f} ({change:+.2f}% 24h)\\n"
         bot.send_message(chat_id, text)
     elif data == "refresh_dashboard":
         dashboard(call.message)
@@ -215,3 +230,4 @@ if __name__ == "__main__":
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
