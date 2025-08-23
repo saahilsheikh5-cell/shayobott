@@ -1,25 +1,23 @@
-import os
+
+from flask import Flask, request
 import telebot
-import requests
 import threading
 import time
+import requests
 from telebot import types
 
 # ================= CONFIG =================
 BOT_TOKEN = "7638935379:AAEmLD7JHLZ36Ywh5tvmlP1F8xzrcNrym_Q"
 WEBHOOK_URL = "https://shayobott-2.onrender.com/" + BOT_TOKEN
 CHAT_ID = 1263295916  # your Telegram ID
-
-bot = telebot.TeleBot(BOT_TOKEN)
-
-# Coin list
-coins = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "AAVEUSDT"]
-
-# Default auto-update interval in seconds
 update_interval = 300  # 5 minutes
 
-# ==========================================
+bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask(__name__)
 
+coins = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "AAVEUSDT"]
+
+# ================= FUNCTIONS =================
 def fetch_price(symbol):
     try:
         data = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}").json()
@@ -75,7 +73,6 @@ def send_signals():
         if price is None:
             msg += f"{coin}: No price data\n"
             continue
-        # Example: you can replace ATR and confirmations with your own logic
         atr = price * 0.01
         buy_signal = generate_signal(coin, "1h", "BUY", price, atr, confirmations=3)
         sell_signal = generate_signal(coin, "1h", "SELL", price, atr, confirmations=3)
@@ -105,7 +102,7 @@ def start(message):
 
 @bot.message_handler(func=lambda message: True)
 def handle_buttons(message):
-    global update_interval
+    global coins
     if message.text == "Live Prices":
         send_portfolio()
     elif message.text == "Technical Signals":
@@ -125,11 +122,23 @@ def handle_buttons(message):
             coins.append(coin)
             bot.send_message(message.chat.id, f"{coin} added to your list.")
 
-# ================= START AUTO-UPDATE THREAD =================
-threading.Thread(target=auto_update, daemon=True).start()
+# ================= FLASK ROUTE FOR WEBHOOK =================
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    json_str = request.get_data().decode("utf-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "!", 200
 
-# ================= SET WEBHOOK =================
-bot.remove_webhook()
-bot.set_webhook(url=WEBHOOK_URL)
+# ================= MAIN =================
+if __name__ == "__main__":
+    # Remove previous webhook and set new one
+    bot.remove_webhook()
+    bot.set_webhook(url=WEBHOOK_URL)
+    # Start auto-update in background
+    threading.Thread(target=auto_update, daemon=True).start()
+    # Run Flask app on port 10000 or PORT environment variable
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
 
