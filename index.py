@@ -64,13 +64,13 @@ def calculate_indicators(df):
     indicators['Close'] = df['Close'].iloc[-1]
     return indicators
 
-# === Signal Generation with icons and colors ===
+# === Signal Generation with icons, colors, RSI, MACD ===
 
 def generate_signal(symbol, interval):
     df = fetch_candles(symbol, interval)
     ind = calculate_indicators(df)
     if not ind:
-        return "⚪ HOLD — No data", ''
+        return f"⏱ {interval} — ⚪ HOLD — {symbol} | No data", ''
     signal = "HOLD"
     strong_flag = ''
     icon = '⚪'
@@ -93,9 +93,11 @@ def generate_signal(symbol, interval):
     sl = round(price*0.98, 2) if 'BUY' in signal else round(price*1.02,2)
     t1 = round(price*1.02, 2) if 'BUY' in signal else round(price*0.98,2)
     t2 = round(price*1.04, 2) if 'BUY' in signal else round(price*0.96,2)
-    return f"{icon}{color_icon} {signal} — {symbol} | Price: {price} | SL: {sl}, T1: {t1}, T2: {t2}", strong_flag
+    return (f"⏱ {interval} — {icon}{color_icon} {signal} — {symbol}\n"
+            f"Price: {price} | SL: {sl}, T1: {t1}, T2: {t2}\n"
+            f"RSI: {ind['RSI']:.2f}, MACD: {ind['MACD']:.2f}, Signal: {ind['Signal']:.2f}"), strong_flag
 
-# === Real-time update per coin with alert ===
+# === Real-time update per coin with alert including timeframe, RSI, MACD ===
 INTERVALS = {'1m':60, '5m':300, '15m':900, '1h':3600, '4h':14400, '1d':86400}
 
 def update_coin_signals(symbol):
@@ -157,7 +159,7 @@ def handle_buttons(message):
         for coin in coins:
             msg += f"🔹 {coin}\n"
             for tf, signal in coin_signals.get(coin, {}).items():
-                msg += f"   ⏱ {tf}: {signal}\n"
+                msg += f"{signal}\n"
         bot.send_message(chat_id, msg)
 
     elif message.text == "Top Movers":
@@ -212,6 +214,7 @@ bot.set_webhook(url=WEBHOOK_URL)
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
