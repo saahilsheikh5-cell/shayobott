@@ -23,6 +23,9 @@ signals_on = True
 
 BASE_URL = "https://api.binance.com/api/v3"
 
+# === FIXED CHAT ID ===
+USER_CHAT_ID = 1263295916  # your Telegram chat ID
+
 # === HELPER FUNCTIONS ===
 def fetch_price(symbol):
     try:
@@ -105,38 +108,38 @@ def top_movers(limit=5):
         r = requests.get(f"{BASE_URL}/ticker/24hr", timeout=5).json()
         movers_1h = sorted(r, key=lambda x: abs(float(x["priceChangePercent"])), reverse=True)[:limit]
         movers_24h = sorted(r, key=lambda x: abs(float(x["priceChangePercent"])), reverse=True)[:limit]
-        msg = "🚀 *Top Movers*\\n\\n⏱ *1 Hour Movers:*\\n"
+        msg = "🚀 *Top Movers*\n\n⏱ *1 Hour Movers:*\n"
         for sym in movers_1h:
-            msg += f"{sym['symbol']}: {float(sym['priceChangePercent']):+.2f}%\\n"
-        msg += "\\n📅 *24 Hour Movers:*\\n"
+            msg += f"{sym['symbol']}: {float(sym['priceChangePercent']):+.2f}%\n"
+        msg += "\n📅 *24 Hour Movers:*\n"
         for sym in movers_24h:
-            msg += f"{sym['symbol']}: {float(sym['priceChangePercent']):+.2f}%\\n"
+            msg += f"{sym['symbol']}: {float(sym['priceChangePercent']):+.2f}%\n"
         return msg
     except:
         return "Error fetching movers"
 
 def get_portfolio_summary():
     total = 0
-    text = "📊 *Your Portfolio:*\\n\\n"
+    text = "📊 *Your Portfolio:*\n\n"
     for coin, qty in portfolio.items():
         price, change = fetch_price(coin)
         if price:
             value = qty * price
             total += value
-            text += f"{coin[:-4]}: {qty} × ${price:.2f} = ${value:.2f} ({change:.2f}% 24h)\\n"
-        else: text += f"{coin}: Error fetching price\\n"
-    text += f"\\n💰 Total Portfolio Value: ${total:.2f}"
+            text += f"{coin[:-4]}: {qty} × ${price:.2f} = ${value:.2f} ({change:.2f}% 24h)\n"
+        else: text += f"{coin}: Error fetching price\n"
+    text += f"\n💰 Total Portfolio Value: ${total:.2f}"
     return text
 
 def get_signals_text():
-    text = "📊 *Technical Analysis Signals*\\n\\n"
+    text = "📊 *Technical Analysis Signals*\n\n"
     for sym in watchlist:
-        text += f"🔹 {sym}\\n"
+        text += f"🔹 {sym}\n"
         for interval in ["1m","5m","15m","1h","4h","1d"]:
             sig = generate_signal(sym, interval)
             clean_sig = sig.split("—")[0].strip() + " | " + sig.split("|")[1].strip() if sig else "No clear signal"
-            text += f"   ⏱ {interval}: {clean_sig}\\n"
-        text += "\\n"
+            text += f"   ⏱ {interval}: {clean_sig}\n"
+        text += "\n"
     return text
 
 # === DASHBOARD ===
@@ -154,7 +157,7 @@ def dashboard(message):
         types.InlineKeyboardButton("🔕 Signals OFF", callback_data="signals_off"),
         types.InlineKeyboardButton("🔄 Refresh Dashboard", callback_data="refresh_dashboard")
     )
-    bot.send_message(message.chat.id, "📌 *Crypto Dashboard*\\n\\nChoose an option:", reply_markup=markup, parse_mode="Markdown")
+    bot.send_message(message.chat.id, "📌 *Crypto Dashboard*\n\nChoose an option:", reply_markup=markup, parse_mode="Markdown")
 
 # === CALLBACK HANDLER ===
 @bot.callback_query_handler(func=lambda call: True)
@@ -185,7 +188,7 @@ def callback_handler(call):
         text = ""
         for sym in watchlist:
             price, change = fetch_price(sym)
-            if price: text += f"{sym}: ${price:.2f} ({change:+.2f}% 24h)\\n"
+            if price: text += f"{sym}: ${price:.2f} ({change:+.2f}% 24h)\n"
         bot.send_message(chat_id, text)
     elif data == "refresh_dashboard":
         dashboard(call.message)
@@ -211,9 +214,14 @@ def signal_watcher():
                 for interval in ["1m","5m","15m","1h","4h","1d"]:
                     sig = generate_signal(sym, interval)
                     if sig:
-                        bot.send_message(chat_id, sig)
+                        bot.send_message(USER_CHAT_ID, sig)
         time.sleep(60)
 
 threading.Thread(target=signal_watcher, daemon=True).start()
 
-#
+# === FLASK WEBHOOK ===
+app = Flask(__name__)
+
+@app.route("/" + BOT_TOKEN, methods=["POST"])
+def webhook():
+    update = tele
