@@ -19,6 +19,8 @@ chat_id = None
 
 # Store latest signals for fast access
 coin_signals = {}
+# Store last sent strong signals to avoid duplicate alerts
+last_alerted = {}
 
 # === Binance API ===
 BASE_URL = 'https://api.binance.com/api/v3'
@@ -62,38 +64,52 @@ def calculate_indicators(df):
     indicators['Close'] = df['Close'].iloc[-1]
     return indicators
 
-# === Signal Generation ===
+# === Signal Generation with icons and colors ===
 
 def generate_signal(symbol, interval):
     df = fetch_candles(symbol, interval)
     ind = calculate_indicators(df)
     if not ind:
-        return "No data"
+        return "⚪ HOLD — No data", ''
     signal = "HOLD"
-    strong = ""
+    strong_flag = ''
+    icon = '⚪'
+    color_icon = ''
     if ind['MACD'] > ind['Signal'] and ind['RSI'] < 70:
         signal = "BUY"
+        icon = '🔺'
+        color_icon = '🟢'
         if ind['RSI'] < 60:
-            strong = "STRONG "
+            signal = "STRONG BUY"
+            strong_flag = 'BUY'
     elif ind['MACD'] < ind['Signal'] and ind['RSI'] > 30:
         signal = "SELL"
+        icon = '🔻'
+        color_icon = '🔴'
         if ind['RSI'] > 40:
-            strong = "STRONG "
+            signal = "STRONG SELL"
+            strong_flag = 'SELL'
     price = ind['Close']
-    sl = round(price*0.98, 2) if signal == 'BUY' else round(price*1.02,2)
-    t1 = round(price*1.02, 2) if signal == 'BUY' else round(price*0.98,2)
-    t2 = round(price*1.04, 2) if signal == 'BUY' else round(price*0.96,2)
-    return f"{strong}{signal} — {symbol} | Price: {price} | SL: {sl}, T1: {t1}, T2: {t2}"
+    sl = round(price*0.98, 2) if 'BUY' in signal else round(price*1.02,2)
+    t1 = round(price*1.02, 2) if 'BUY' in signal else round(price*0.98,2)
+    t2 = round(price*1.04, 2) if 'BUY' in signal else round(price*0.96,2)
+    return f"{icon}{color_icon} {signal} — {symbol} | Price: {price} | SL: {sl}, T1: {t1}, T2: {t2}", strong_flag
 
-# === Real-time update per coin ===
+# === Real-time update per coin with alert ===
 INTERVALS = {'1m':60, '5m':300, '15m':900, '1h':3600, '4h':14400, '1d':86400}
 
 def update_coin_signals(symbol):
+    last_alerted[symbol] = {tf: '' for tf in INTERVALS.keys()}
     while True:
         coin_signals[symbol] = {}
         for tf in INTERVALS.keys():
-            coin_signals[symbol][tf] = generate_signal(symbol, tf)
-        time.sleep(60)  # Update every minute for fast refresh
+            signal_text, strong_flag = generate_signal(symbol, tf)
+            coin_signals[symbol][tf] = signal_text
+            if strong_flag and chat_id:
+                if strong_flag != last_alerted[symbol][tf]:
+                    bot.send_message(chat_id, f"🚨 Strong Signal Detected!\n{signal_text}")
+                    last_alerted[symbol][tf] = strong_flag
+        time.sleep(60)
 
 # === Top Movers ===
 def fetch_top_movers():
@@ -150,7 +166,8 @@ def handle_buttons(message):
         for interval, coins_list in movers.items():
             msg += f"⏱ {interval}:\n"
             for sym, change in coins_list:
-                msg += f"   {sym}: {change:.2f}%\n"
+                change_icon = '🟢' if change > 0 else '🔴'
+                msg += f"   {sym}: {change_icon} {change:.2f}%\n"
         bot.send_message(chat_id, msg)
 
     elif message.text == "Add Coin":
@@ -166,7 +183,6 @@ def add_coin(message):
     if symbol not in coins:
         coins.append(symbol)
         bot.send_message(chat_id, f"{symbol} added!")
-        # Start real-time thread
         threading.Thread(target=update_coin_signals, args=(symbol,), daemon=True).start()
     else:
         bot.send_message(chat_id, f"{symbol} already in your list.")
@@ -176,6 +192,7 @@ def remove_coin(message):
     if symbol in coins:
         coins.remove(symbol)
         coin_signals.pop(symbol, None)
+        last_alerted.pop(symbol, None)
         bot.send_message(chat_id, f"{symbol} removed!")
     else:
         bot.send_message(chat_id, f"{symbol} not in your list.")
@@ -195,6 +212,7 @@ bot.set_webhook(url=WEBHOOK_URL)
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
