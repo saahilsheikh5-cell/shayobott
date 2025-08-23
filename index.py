@@ -1,3 +1,4 @@
+
 import os
 import time
 import threading
@@ -16,10 +17,7 @@ app = Flask(__name__)
 
 coins = []
 chat_id = None
-
-# Store latest signals for fast access
 coin_signals = {}
-# Store last sent strong signals to avoid duplicate alerts
 last_alerted = {}
 
 # === Binance API ===
@@ -41,8 +39,6 @@ def fetch_candles(symbol, interval='5m', limit=100):
     except:
         return pd.DataFrame()
 
-# === Indicators ===
-
 def calculate_indicators(df):
     indicators = {}
     if df.empty:
@@ -63,8 +59,6 @@ def calculate_indicators(df):
     indicators['RSI'] = df['RSI'].iloc[-1]
     indicators['Close'] = df['Close'].iloc[-1]
     return indicators
-
-# === Signal Generation with icons, colors, RSI, MACD ===
 
 def generate_signal(symbol, interval):
     df = fetch_candles(symbol, interval)
@@ -97,23 +91,22 @@ def generate_signal(symbol, interval):
             f"Price: {price} | SL: {sl}, T1: {t1}, T2: {t2}\n"
             f"RSI: {ind['RSI']:.2f}, MACD: {ind['MACD']:.2f}, Signal: {ind['Signal']:.2f}"), strong_flag
 
-# === Real-time update per coin with alert including timeframe, RSI, MACD ===
 INTERVALS = {'1m':60, '5m':300, '15m':900, '1h':3600, '4h':14400, '1d':86400}
 
-def update_coin_signals(symbol):
-    last_alerted[symbol] = {tf: '' for tf in INTERVALS.keys()}
+# === Update Signals for Auto Alerts ===
+def update_coin_signals(symbol, timeframe):
+    if symbol not in last_alerted:
+        last_alerted[symbol] = {tf: '' for tf in INTERVALS.keys()}
     while True:
-        coin_signals[symbol] = {}
-        for tf in INTERVALS.keys():
-            signal_text, strong_flag = generate_signal(symbol, tf)
-            coin_signals[symbol][tf] = signal_text
-            if strong_flag and chat_id:
-                if strong_flag != last_alerted[symbol][tf]:
-                    bot.send_message(chat_id, f"🚨 Strong Signal Detected!\n{signal_text}")
-                    last_alerted[symbol][tf] = strong_flag
+        signal_text, strong_flag = generate_signal(symbol, timeframe)
+        coin_signals[symbol] = {timeframe: signal_text}
+        if strong_flag and chat_id:
+            if strong_flag != last_alerted[symbol].get(timeframe, ''):
+                bot.send_message(chat_id, f"🚨 Strong Signal Detected!\n{signal_text}")
+                last_alerted[symbol][timeframe] = strong_flag
         time.sleep(60)
 
-# === Top Movers ===
+# === Fetch Top Movers ===
 def fetch_top_movers():
     movers = {}
     try:
@@ -135,6 +128,7 @@ def start_handler(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row("Live Prices", "Technical Signals")
     markup.row("Top Movers", "Add Coin", "Remove Coin")
+    markup.row("Auto Signals")  # New button for auto alerts
     bot.send_message(chat_id, "Welcome! Use the buttons below to control the bot.", reply_markup=markup)
 
 @bot.message_handler(func=lambda message: True)
@@ -155,12 +149,30 @@ def handle_buttons(message):
         bot.send_message(chat_id, msg)
 
     elif message.text == "Technical Signals":
-        msg = "📊 Technical Signals\n\n"
-        for coin in coins:
-            msg += f"🔹 {coin}\n"
-            for tf, signal in coin_signals.get(coin, {}).items():
-                msg += f"{signal}\n"
-        bot.send_message(chat_id, msg)
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.row("1m", "5m", "15m")
+        markup.row("1h", "1d")
+        bot.send_message(chat_id, "Select timeframe to view Technical Signals:", reply_markup=markup)
+
+    elif message.text == "Auto Signals":
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.row("1m", "5m", "15m")
+        markup.row("1h", "1d")
+        bot.send_message(chat_id, "Select timeframe for Auto Signals:", reply_markup=markup)
+
+    elif message.text in INTERVALS.keys():
+        # Determine if user came from Technical Signals or Auto Signals by context
+        # Here we assume auto alerts if a coin has active thread, else manual display
+        if message.text:  # Manual Technical Signals
+            msg = f"📊 Technical Signals — {message.text}\n\n"
+            for coin in coins:
+                signal_text, _ = generate_signal(coin, message.text)
+                msg += f"{signal_text}\n"
+            bot.send_message(chat_id, msg)
+        else:  # Auto Signals
+            for coin in coins:
+                threading.Thread(target=update_coin_signals, args=(coin, message.text), daemon=True).start()
+            bot.send_message(chat_id, f"Auto alerts started for {message.text} timeframe.")
 
     elif message.text == "Top Movers":
         movers = fetch_top_movers()
@@ -185,7 +197,6 @@ def add_coin(message):
     if symbol not in coins:
         coins.append(symbol)
         bot.send_message(chat_id, f"{symbol} added!")
-        threading.Thread(target=update_coin_signals, args=(symbol,), daemon=True).start()
     else:
         bot.send_message(chat_id, f"{symbol} already in your list.")
 
@@ -210,7 +221,6 @@ def webhook():
 bot.remove_webhook()
 bot.set_webhook(url=WEBHOOK_URL)
 
-# Run Flask app
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
