@@ -1,11 +1,9 @@
 services:
   - type: web
-    name: saahilcryptobot
+    name: shayobott
     env: python
-    plan: free
-    pythonVersion: 3.11
     buildCommand: pip install -r requirements.txt
     startCommand: python index.py
-    envVars:
-      - key: PORT
-        value: 10000
+    plan: free
+    autoDeploy: true
+
