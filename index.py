@@ -7,7 +7,7 @@ from telebot import types
 
 # ================= CONFIG =================
 BOT_TOKEN = "7638935379:AAEmLD7JHLZ36Ywh5tvmlP1F8xzrcNrym_Q"
-WEBHOOK_URL = "https://shayobott.onrender.com/" + BOT_TOKEN
+WEBHOOK_URL = "https://shayobott-2.onrender.com/" + BOT_TOKEN
 CHAT_ID = 1263295916  # your Telegram ID
 
 bot = telebot.TeleBot(BOT_TOKEN)
