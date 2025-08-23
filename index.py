@@ -1,62 +1,61 @@
 import os
+import telebot
+import requests
 import time
 import threading
-import requests
 import numpy as np
 import pandas as pd
 from flask import Flask, request
-import telebot
 from telebot import types
 
 # === CONFIG ===
 BOT_TOKEN = "7638935379:AAEmLD7JHLZ36Ywh5tvmlP1F8xzrcNrym_Q"
-WEBHOOK_URL = "https://shayobott-2.onrender.com/" + BOT_TOKEN
-CHAT_ID = 1263295916  # for auto-sent signals
-
+WEBHOOK_URL = "https://shayobott.onrender.com/" + BOT_TOKEN
+CHAT_ID = 1263295916  # your chat id for automatic alerts
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # Default portfolio and watchlist
-portfolio = {"BTCUSDT": 0.5, "ETHUSDT": 2, "SOLUSDT": 50, "XRPUSDT": 100, "AAVEUSDT": 20}
+portfolio = {"BTCUSDT": 0.5, "ETHUSDT": 2, "SOLUSDT": 50}
 watchlist = set(portfolio.keys())
 signals_on = True
-auto_interval = 60  # default auto-signal interval in seconds
+update_interval = 60  # seconds for auto-signal updates
 
 BASE_URL = "https://api.binance.com/api/v3"
 
 # === HELPER FUNCTIONS ===
 def fetch_price(symbol):
     try:
-        r = requests.get(f"{BASE_URL}/ticker/price?symbol={symbol}", timeout=5).json()
-        return float(r["price"])
+        r = requests.get(f"{BASE_URL}/ticker/24hr?symbol={symbol}", timeout=5).json()
+        return float(r["lastPrice"]), float(r["priceChangePercent"])
     except:
-        return None
+        return None, None
 
 def fetch_klines(symbol, interval="1m", limit=100):
     try:
-        data = requests.get(f"{BASE_URL}/klines?symbol={symbol}&interval={interval}&limit={limit}", timeout=5).json()
-        return [float(x[4]) for x in data]
+        url = f"{BASE_URL}/klines?symbol={symbol}&interval={interval}&limit={limit}"
+        data = requests.get(url, timeout=5).json()
+        closes = [float(x[4]) for x in data]
+        return closes
     except:
         return []
 
 def calc_rsi(prices, period=14):
     if len(prices) < period: return None
     deltas = np.diff(prices)
-    gains = np.where(deltas > 0, deltas, 0)
-    losses = np.where(deltas < 0, -deltas, 0)
-    avg_gain = np.mean(gains[-period:])
-    avg_loss = np.mean(losses[-period:])
-    if avg_loss == 0: return 100
-    rs = avg_gain / avg_loss
+    gains = deltas[deltas > 0].sum() / period
+    losses = -deltas[deltas < 0].sum() / period
+    if losses == 0: return 100
+    rs = gains / losses
     return 100 - (100 / (1 + rs))
 
 def calc_macd(prices, fast=12, slow=26, signal=9):
     if len(prices) < slow + signal: return None, None, None
     fast_ma = np.mean(prices[-fast:])
     slow_ma = np.mean(prices[-slow:])
-    macd_val = fast_ma - slow_ma
-    signal_line = np.mean([np.mean(prices[-(slow+i):-i] if i != 0 else prices[-slow:]) for i in range(signal)])
-    hist = macd_val - signal_line
-    return macd_val, signal_line, hist
+    macd = fast_ma - slow_ma
+    signal_line = np.mean([np.mean(prices[-(slow+i):]) for i in range(signal)])
+    hist = macd - signal_line
+    return macd, signal_line, hist
 
 def generate_signal(symbol, interval):
     prices = fetch_klines(symbol, interval)
@@ -66,10 +65,9 @@ def generate_signal(symbol, interval):
     last_price = prices[-1]
     if rsi is None or macd is None: return None
 
-    # Strong vs normal signals
-    if rsi < 20: base_signal = "💚 STRONG BUY"
+    if rsi < 30: base_signal = "💚 STRONG BUY"
     elif rsi < 40: base_signal = "✅ BUY"
-    elif rsi > 80: base_signal = "💔 STRONG SELL"
+    elif rsi > 70: base_signal = "💔 STRONG SELL"
     elif rsi > 60: base_signal = "❌ SELL"
     else: return None
 
@@ -77,25 +75,23 @@ def generate_signal(symbol, interval):
     if macd > signal_line: trend = " (MACD Bullish)"
     elif macd < signal_line: trend = " (MACD Bearish)"
 
-    # Targets and stop-loss
-    stop_loss = last_price * 0.98 if "BUY" in base_signal else last_price * 1.02
-    targets = [last_price * 1.02, last_price * 1.05, last_price * 1.08] if "BUY" in base_signal else [last_price * 0.98, last_price * 0.95, last_price * 0.92]
+    stop_loss = round(last_price * 0.98, 2)
+    target1 = round(last_price * 1.02, 2)
+    target2 = round(last_price * 1.05, 2)
 
-    return f"{base_signal} — {symbol} {interval} | Price: {last_price:.2f}{trend}\nTargets: {', '.join(f'{t:.2f}' for t in targets)} | Stop-loss: {stop_loss:.2f}"
+    return f"{base_signal} — {symbol} {interval} | Price: {last_price:.2f}{trend} | SL: {stop_loss}, T1: {target1}, T2: {target2}"
 
 def top_movers(limit=5):
     try:
-        data = requests.get(f"{BASE_URL}/ticker/24hr", timeout=5).json()
-        movers_5m = sorted(data, key=lambda x: abs(float(x.get("priceChangePercent",0))), reverse=True)[:limit]
-        movers_1h = sorted(data, key=lambda x: abs(float(x.get("priceChangePercent",0))), reverse=True)[:limit]
-        movers_24h = sorted(data, key=lambda x: abs(float(x.get("priceChangePercent",0))), reverse=True)[:limit]
-
-        msg = "🚀 *Top Movers*\n\n⏱ *5 Min Movers:*\n"
-        for sym in movers_5m: msg += f"{sym['symbol']}: {float(sym['priceChangePercent']):+.2f}%\n"
-        msg += "\n⏱ *1 Hour Movers:*\n"
-        for sym in movers_1h: msg += f"{sym['symbol']}: {float(sym['priceChangePercent']):+.2f}%\n"
+        r = requests.get(f"{BASE_URL}/ticker/24hr", timeout=5).json()
+        movers_1h = sorted(r, key=lambda x: abs(float(x["priceChangePercent"])), reverse=True)[:limit]
+        movers_24h = sorted(r, key=lambda x: abs(float(x["priceChangePercent"])), reverse=True)[:limit]
+        msg = "🚀 *Top Movers*\n\n⏱ *1 Hour Movers:*\n"
+        for sym in movers_1h:
+            msg += f"{sym['symbol']}: {float(sym['priceChangePercent']):+.2f}%\n"
         msg += "\n⏱ *24 Hour Movers:*\n"
-        for sym in movers_24h: msg += f"{sym['symbol']}: {float(sym['priceChangePercent']):+.2f}%\n"
+        for sym in movers_24h:
+            msg += f"{sym['symbol']}: {float(sym['priceChangePercent']):+.2f}%\n"
         return msg
     except:
         return "Error fetching movers"
@@ -104,13 +100,12 @@ def get_portfolio_summary():
     total = 0
     text = "📊 *Your Portfolio:*\n\n"
     for coin, qty in portfolio.items():
-        price = fetch_price(coin)
+        price, change = fetch_price(coin)
         if price:
             value = qty * price
             total += value
-            text += f"{coin}: {qty} × ${price:.2f} = ${value:.2f}\n"
-        else:
-            text += f"{coin}: Error fetching price\n"
+            text += f"{coin[:-4]}: {qty} × ${price:.2f} = ${value:.2f} ({change:.2f}% 24h)\n"
+        else: text += f"{coin}: Error fetching price\n"
     text += f"\n💰 Total Portfolio Value: ${total:.2f}"
     return text
 
@@ -120,7 +115,8 @@ def get_signals_text():
         text += f"🔹 {sym}\n"
         for interval in ["1m","5m","15m","1h","4h","1d"]:
             sig = generate_signal(sym, interval)
-            text += f"   ⏱ {interval}: {sig if sig else 'No clear signal'}\n"
+            clean_sig = sig if sig else "No clear signal"
+            text += f"   ⏱ {interval}: {clean_sig}\n"
         text += "\n"
     return text
 
@@ -169,8 +165,9 @@ def callback_handler(call):
     elif data == "live_prices":
         text = ""
         for sym in watchlist:
-            price = fetch_price(sym)
-            text += f"{sym}: ${price:.2f}\n" if price else f"{sym}: Error fetching price\n"
+            price, change = fetch_price(sym)
+            if price: text += f"{sym}: ${price:.2f} ({change:+.2f}% 24h)\n"
+            else: text += f"{sym}: Error fetching price\n"
         bot.send_message(chat_id, text)
     elif data == "refresh_dashboard":
         dashboard(call.message)
@@ -188,10 +185,38 @@ def remove_coin_step(message):
     else:
         bot.send_message(message.chat.id, f"{symbol} not in watchlist")
 
-# === AUTO-SIGNAL THREAD ===
-def auto_signal_watcher():
+# === BACKGROUND SIGNAL ALERTS ===
+def signal_watcher():
     while True:
         if signals_on:
             for sym in watchlist:
-                for interval in ["1
+                for interval in ["1m","5m","15m","1h","4h","1d"]:
+                    sig = generate_signal(sym, interval)
+                    if sig:
+                        bot.send_message(CHAT_ID, sig, parse_mode="Markdown")
+        time.sleep(update_interval)
 
+# === FLASK WEBHOOK SERVER ===
+app = Flask(__name__)
+
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    json_str = request.get_data().decode("utf-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "", 200
+
+@app.route("/", methods=["GET"])
+def index():
+    return "Bot is live!", 200
+
+# === SET WEBHOOK ===
+bot.remove_webhook()
+bot.set_webhook(url=WEBHOOK_URL)
+
+# === START BACKGROUND THREAD ===
+threading.Thread(target=signal_watcher, daemon=True).start()
+
+# === START FLASK APP ===
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
