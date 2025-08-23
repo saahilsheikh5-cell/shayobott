@@ -1,4 +1,4 @@
-import os 
+import os
 import telebot
 import requests
 import time
@@ -8,23 +8,23 @@ import pandas as pd
 from flask import Flask, request
 from telebot import types
 
-# === CONFIG (use environment variable correctly) ===
-BOT_TOKEN = os.environ.get("BOT_TOKEN")  # get the token from Render environment
+# === CONFIG ===
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable is not set!")
 
 WEBHOOK_URL = "https://shayobott.onrender.com/" + BOT_TOKEN
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Default portfolio and watchlist
+# User chat ID
+USER_CHAT_ID = 1263295916
+
+# Portfolio and watchlist
 portfolio = {"BTCUSDT": 0.5, "ETHUSDT": 2, "SOLUSDT": 50}
 watchlist = set(portfolio.keys())
 signals_on = True
 
 BASE_URL = "https://api.binance.com/api/v3"
-
-# === FIXED CHAT ID ===
-USER_CHAT_ID = 1263295916  # your Telegram chat ID
 
 # === HELPER FUNCTIONS ===
 def fetch_price(symbol):
@@ -69,7 +69,7 @@ def generate_signal(symbol, interval):
     last_price = prices[-1]
     if rsi is None or macd is None: return None
 
-    # Determine base signal by RSI
+    # Determine base signal
     if rsi < 30:
         base_signal = "💚 STRONG BUY"
         rsi_strength = "strong"
@@ -85,7 +85,7 @@ def generate_signal(symbol, interval):
     else:
         return None
 
-    # Determine trend by MACD
+    # MACD trend
     trend = ""
     macd_trend = ""
     if macd > signal_line:
@@ -95,11 +95,11 @@ def generate_signal(symbol, interval):
         trend = " (MACD Bearish)"
         macd_trend = "bearish"
 
-    # Upgrade signal to VERY STRONG if both RSI and MACD confirm
+    # Upgrade to VERY STRONG if RSI + MACD confirm
     if rsi_strength == "strong":
         if (base_signal.startswith("💚") and macd_trend == "bullish") or \
            (base_signal.startswith("💔") and macd_trend == "bearish"):
-            base_signal = "💎 VERY STRONG " + base_signal.split(" ")[-1]  # e.g., 💎 VERY STRONG BUY
+            base_signal = "💎 VERY STRONG " + base_signal.split(" ")[-1]
 
     return f"{base_signal} — {symbol} {interval} | Price: {last_price:.2f}, RSI={rsi:.2f}{trend}"
 
@@ -127,7 +127,8 @@ def get_portfolio_summary():
             value = qty * price
             total += value
             text += f"{coin[:-4]}: {qty} × ${price:.2f} = ${value:.2f} ({change:.2f}% 24h)\n"
-        else: text += f"{coin}: Error fetching price\n"
+        else:
+            text += f"{coin}: Error fetching price\n"
     text += f"\n💰 Total Portfolio Value: ${total:.2f}"
     return text
 
@@ -159,7 +160,6 @@ def dashboard(message):
     )
     bot.send_message(message.chat.id, "📌 *Crypto Dashboard*\n\nChoose an option:", reply_markup=markup, parse_mode="Markdown")
 
-# === CALLBACK HANDLER ===
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     global signals_on
@@ -206,22 +206,15 @@ def remove_coin_step(message):
     else:
         bot.send_message(message.chat.id, f"{symbol} not in watchlist")
 
-# === BACKGROUND SIGNAL ALERTS ===
+# === BACKGROUND SIGNALS ===
 def signal_watcher():
     while True:
-        if signals_on:
-            for sym in watchlist:
-                for interval in ["1m","5m","15m","1h","4h","1d"]:
-                    sig = generate_signal(sym, interval)
-                    if sig:
-                        bot.send_message(USER_CHAT_ID, sig)
-        time.sleep(60)
-
-threading.Thread(target=signal_watcher, daemon=True).start()
-
-# === FLASK WEBHOOK ===
-app = Flask(__name__)
-
-@app.route("/" + BOT_TOKEN, methods=["POST"])
-def webhook():
-    update = tele
+        try:
+            if signals_on:
+                for sym in watchlist:
+                    for interval in ["1m","5m","15m","1h","4h","1d"]:
+                        sig = generate_signal(sym, interval)
+                        if sig:
+                            bot.send_message(USER_CHAT_ID, sig)
+        except Exception as e:
+            print("Signal watcher error:", e)
