@@ -11,7 +11,7 @@ from telebot import types
 # === CONFIG ===
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable is not set!")
+    raise ValueError("BOT_TOKEN environment variable is missing!")
 
 WEBHOOK_URL = "https://shayobott.onrender.com/" + BOT_TOKEN
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -218,3 +218,5 @@ def signal_watcher():
                             bot.send_message(USER_CHAT_ID, sig)
         except Exception as e:
             print("Signal watcher error:", e)
+        time.sleep(60)
+
