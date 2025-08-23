@@ -9,34 +9,41 @@ from flask import Flask, request
 from telebot import types
 
 # === CONFIG ===
-BOT_TOKEN = os.environ.get("BOT_TOKEN")  # Make sure BOT_TOKEN is added as environment variable
-WEBHOOK_URL = "https://shayobott.onrender.com/" + BOT_TOKEN
-USER_CHAT_ID = 1263295916  # Your chat ID
+BOT_TOKEN = os.environ.get("BOT_TOKEN")  # Make sure you set this as env variable in Render
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL") or "https://shayobott.onrender.com/" + BOT_TOKEN
+CHAT_ID = 1263295916  # your chat id
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Default portfolio and watchlist
-portfolio = {"BTCUSDT": 0.5, "ETHUSDT": 2, "SOLUSDT": 50, "XRPUSDT": 1000, "AAVEUSDT": 10}
+portfolio = {"BTCUSDT": 0.5, "ETHUSDT": 2, "SOLUSDT": 50, "XRPUSDT": 200, "AAVEUSDT": 10}
 watchlist = set(portfolio.keys())
 signals_on = True
 
 BASE_URL = "https://api.binance.com/api/v3"
 
 # === HELPER FUNCTIONS ===
+
 def fetch_price(symbol):
     try:
-        r = requests.get(f"{BASE_URL}/ticker/24hr?symbol={symbol}", timeout=5).json()
-        return float(r["lastPrice"]), float(r["priceChangePercent"])
-    except:
+        r = requests.get(f"{BASE_URL}/ticker/24hr", params={"symbol": symbol}, timeout=5)
+        data = r.json()
+        if "lastPrice" in data:
+            return float(data["lastPrice"]), float(data["priceChangePercent"])
+        print(f"[ERROR] fetch_price: unexpected data for {symbol}: {data}")
+        return None, None
+    except Exception as e:
+        print(f"[ERROR] fetch_price: {symbol} => {e}")
         return None, None
 
 def fetch_klines(symbol, interval="1m", limit=100):
     try:
-        url = f"{BASE_URL}/klines?symbol={symbol}&interval={interval}&limit={limit}"
-        data = requests.get(url, timeout=5).json()
+        url = f"{BASE_URL}/klines"
+        params = {"symbol": symbol, "interval": interval, "limit": limit}
+        data = requests.get(url, params=params, timeout=5).json()
         closes = [float(x[4]) for x in data]
         return closes
-    except:
+    except Exception as e:
+        print(f"[ERROR] fetch_klines: {symbol} {interval} => {e}")
         return []
 
 def calc_rsi(prices, period=14):
@@ -65,10 +72,9 @@ def generate_signal(symbol, interval):
     last_price = prices[-1]
     if rsi is None or macd is None: return None
 
-    # Base signal
-    if rsi < 30: base_signal = "💚 VERY STRONG BUY"
+    if rsi < 30: base_signal = "💚 STRONG BUY"
     elif rsi < 40: base_signal = "✅ BUY"
-    elif rsi > 70: base_signal = "💔 VERY STRONG SELL"
+    elif rsi > 70: base_signal = "💔 STRONG SELL"
     elif rsi > 60: base_signal = "❌ SELL"
     else: return None
 
@@ -76,21 +82,25 @@ def generate_signal(symbol, interval):
     if macd > signal_line: trend = " (MACD Bullish)"
     elif macd < signal_line: trend = " (MACD Bearish)"
 
-    # Add SL and 3 Targets
-    sl = last_price * 0.98 if "BUY" in base_signal else last_price * 1.02
-    targets = [last_price*1.02, last_price*1.05, last_price*1.08] if "BUY" in base_signal else [last_price*0.98, last_price*0.95, last_price*0.92]
+    stop_loss = round(last_price * 0.97, 2) if "BUY" in base_signal else round(last_price * 1.03, 2)
+    target1 = round(last_price * 1.03, 2) if "BUY" in base_signal else round(last_price * 0.97, 2)
+    target2 = round(last_price * 1.06, 2) if "BUY" in base_signal else round(last_price * 0.94, 2)
 
-    return f"{base_signal} — {symbol} {interval} | Price: {last_price:.2f}, RSI={rsi:.2f}{trend} | SL: {sl:.2f}, Targets: {targets[0]:.2f},{targets[1]:.2f},{targets[2]:.2f}"
+    return f"{base_signal} — {symbol} {interval} | Price: {last_price:.2f}, RSI={rsi:.2f}{trend}\nStop Loss: {stop_loss}, Targets: {target1}, {target2}"
 
 def top_movers(limit=5):
     try:
         r = requests.get(f"{BASE_URL}/ticker/24hr", timeout=5).json()
-        movers = sorted(r, key=lambda x: abs(float(x["priceChangePercent"])), reverse=True)[:limit]
-        msg = "🚀 *Top Movers*\n\n"
-        for sym in movers:
-            msg += f"{sym['symbol']}: {float(sym['priceChangePercent']):+.2f}%\n"
-        return msg
-    except:
+        if isinstance(r, list):
+            movers = sorted(r, key=lambda x: abs(float(x.get("priceChangePercent",0))), reverse=True)[:limit]
+            msg = "🚀 *Top Movers*\n\n"
+            for sym in movers:
+                msg += f"{sym['symbol']}: {float(sym.get('priceChangePercent',0)):+.2f}%\n"
+            return msg
+        print(f"[ERROR] top_movers: unexpected data: {r}")
+        return "Error fetching movers"
+    except Exception as e:
+        print(f"[ERROR] top_movers: {e}")
         return "Error fetching movers"
 
 def get_portfolio_summary():
@@ -102,8 +112,7 @@ def get_portfolio_summary():
             value = qty * price
             total += value
             text += f"{coin[:-4]}: {qty} × ${price:.2f} = ${value:.2f} ({change:.2f}% 24h)\n"
-        else:
-            text += f"{coin}: Error fetching price\n"
+        else: text += f"{coin}: Error fetching price\n"
     text += f"\n💰 Total Portfolio Value: ${total:.2f}"
     return text
 
@@ -113,7 +122,7 @@ def get_signals_text():
         text += f"🔹 {sym}\n"
         for interval in ["1m","5m","15m","1h","4h","1d"]:
             sig = generate_signal(sym, interval)
-            clean_sig = sig.split("—")[0].strip() + " | " + sig.split("|")[1].strip() if sig else "No clear signal"
+            clean_sig = sig if sig else "No clear signal"
             text += f"   ⏱ {interval}: {clean_sig}\n"
         text += "\n"
     return text
@@ -164,7 +173,10 @@ def callback_handler(call):
         text = ""
         for sym in watchlist:
             price, change = fetch_price(sym)
-            if price: text += f"{sym}: ${price:.2f} ({change:+.2f}% 24h)\n"
+            if price:
+                text += f"{sym}: ${price:.2f} ({change:+.2f}% 24h)\n"
+            else:
+                text += f"{sym}: Error fetching price\n"
         bot.send_message(chat_id, text)
     elif data == "refresh_dashboard":
         dashboard(call.message)
@@ -182,33 +194,15 @@ def remove_coin_step(message):
     else:
         bot.send_message(message.chat.id, f"{symbol} not in watchlist")
 
-# === TOP MOVERS FILTERED SIGNALS ===
-def get_top_watchlist(limit=5):
-    movers = []
-    try:
-        r = requests.get(f"{BASE_URL}/ticker/24hr", timeout=5).json()
-        for sym in watchlist:
-            coin_info = next((x for x in r if x["symbol"]==sym), None)
-            if coin_info:
-                movers.append((sym, abs(float(coin_info["priceChangePercent"]))))
-        movers.sort(key=lambda x: x[1], reverse=True)
-        return [x[0] for x in movers[:limit]]
-    except:
-        return list(watchlist)
-
+# === BACKGROUND SIGNAL ALERTS ===
 def signal_watcher():
-    last_sent = {}
     while True:
         if signals_on:
-            top_coins = get_top_watchlist(limit=5)
-            for sym in top_coins:
+            for sym in watchlist:
                 for interval in ["1m","5m","15m","1h","4h","1d"]:
                     sig = generate_signal(sym, interval)
-                    if sig and "VERY STRONG" in sig:
-                        key = f"{sym}_{interval}"
-                        if last_sent.get(key) != sig:
-                            bot.send_message(USER_CHAT_ID, sig)
-                            last_sent[key] = sig
+                    if sig:
+                        bot.send_message(CHAT_ID, sig)
         time.sleep(60)
 
 threading.Thread(target=signal_watcher, daemon=True).start()
@@ -230,4 +224,3 @@ if __name__ == "__main__":
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
