@@ -8,7 +8,7 @@ from telebot import types
 
 # === CONFIG ===
 BOT_TOKEN = "7638935379:AAEmLD7JHLZ36Ywh5tvmlP1F8xzrcNrym_Q"
-WEBHOOK_URL = "https://shayobott.onrender.com/" + BOT_TOKEN
+WEBHOOK_URL = "https://shayobott-2.onrender.com/" + BOT_TOKEN
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
