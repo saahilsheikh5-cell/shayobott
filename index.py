@@ -8,8 +8,11 @@ import pandas as pd
 from flask import Flask, request
 from telebot import types
 
-# === CONFIG (hardcoded) ===
-BOT_TOKEN = os.environ.get("7638935379:AAEmLD7JHLZ36Ywh5tvmlP1F8xzrcNrym_Q")
+# === CONFIG (use environment variable correctly) ===
+BOT_TOKEN = os.environ.get("BOT_TOKEN")  # get the token from Render environment
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN environment variable is not set!")
+
 WEBHOOK_URL = "https://shayobott.onrender.com/" + BOT_TOKEN
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -213,21 +216,4 @@ def signal_watcher():
 
 threading.Thread(target=signal_watcher, daemon=True).start()
 
-# === FLASK WEBHOOK ===
-app = Flask(__name__)
-
-@app.route("/" + BOT_TOKEN, methods=["POST"])
-def webhook():
-    update = telebot.types.Update.de_json(request.stream.read().decode("utf-8"))
-    bot.process_new_updates([update])
-    return "!", 200
-
-@app.route("/")
-def index():
-    return "Bot is running!", 200
-
-if __name__ == "__main__":
-    bot.remove_webhook()
-    bot.set_webhook(url=WEBHOOK_URL)
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
+#
