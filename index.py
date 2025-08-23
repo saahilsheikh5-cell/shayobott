@@ -1,7 +1,9 @@
 import os
-import requests
-import threading
 import time
+import threading
+import requests
+import pandas as pd
+import numpy as np
 from flask import Flask, request
 import telebot
 from telebot import types
@@ -9,148 +11,148 @@ from telebot import types
 # === CONFIG ===
 BOT_TOKEN = "7638935379:AAEmLD7JHLZ36Ywh5tvmlP1F8xzrcNrym_Q"
 WEBHOOK_URL = "https://shayobott-2.onrender.com/" + BOT_TOKEN
-
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# Portfolio coins (modifiable with add/remove buttons)
-coins = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "AAVEUSDT"]
-update_interval = 300  # default 5 minutes
+# Default coin list (can add/remove later via buttons)
+coins = []
+
+# Default auto-update interval in seconds (can change dynamically)
+update_interval = 300  # 5 minutes
+
+# Placeholder for storing last fetched prices and signals
+coin_data = {}
 
 # === Helper Functions ===
-
 def fetch_price(symbol):
     try:
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-        res = requests.get(url, timeout=5).json()
-        return float(res["price"])
+        # Replace with real API
+        response = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}")
+        return float(response.json()["price"])
     except:
         return None
 
-def fetch_top_movers(interval="1h"):
+def fetch_movers(interval="1h"):
     try:
-        url = "https://api.binance.com/api/v3/ticker/24hr"
-        data = requests.get(url, timeout=5).json()
-        movers = sorted(data, key=lambda x: abs(float(x["priceChangePercent"])), reverse=True)
-        top = movers[:5]
-        return [f"{m['symbol']}: {float(m['priceChangePercent']):.2f}%" for m in top]
+        # Replace with real API
+        # Returns list of tuples: (symbol, percentage_change)
+        return [("BTCUSDT", 2.3), ("ETHUSDT", -1.2), ("SOLUSDT", 0.8)]
     except:
-        return ["Error fetching movers"]
-
-def analyze_macd(symbol):
-    # Placeholder logic, integrate real MACD computation
-    return "BUY"
-
-def analyze_rsi(symbol):
-    # Placeholder logic
-    return "BUY"
-
-def analyze_ma(symbol):
-    # Placeholder logic
-    return "BUY"
+        return []
 
 def generate_signal(symbol):
     price = fetch_price(symbol)
     if price is None:
-        return f"{symbol}: Error fetching price"
+        return None
+    # Example logic for signals
+    macd_signal = np.random.choice(["BUY", "SELL"])
+    confirmation = np.random.randint(1, 5)  # 1-5 scale
+    strong = "STRONG " if confirmation == 5 else ""
+    sl = round(price * 0.98, 2) if macd_signal=="BUY" else round(price*1.02,2)
+    t1 = round(price*1.02,2) if macd_signal=="BUY" else round(price*0.98,2)
+    t2 = round(price*1.04,2) if macd_signal=="BUY" else round(price*0.96,2)
+    return f"{strong}{macd_signal} — {symbol} | Price: {price} | SL: {sl}, T1: {t1}, T2: {t2}"
 
-    signals = [analyze_macd(symbol), analyze_rsi(symbol), analyze_ma(symbol)]
+def fetch_all_signals():
+    results = {}
+    for coin in coins:
+        results[coin] = {}
+        for tf in ["1m","5m","15m","1h","4h","1d"]:
+            results[coin][tf] = generate_signal(coin) or "No clear signal"
+    return results
 
-    if signals.count("BUY") == 3:
-        prefix = "✅ STRONG BUY"
-    elif signals.count("BUY") >= 2:
-        prefix = "✅ BUY"
-    elif signals.count("SELL") == 3:
-        prefix = "❌ STRONG SELL"
-    elif signals.count("SELL") >= 2:
-        prefix = "❌ SELL"
-    else:
-        prefix = "⚪ No clear signal"
+def send_auto_updates():
+    while True:
+        if coins:
+            signals = fetch_all_signals()
+            for coin in coins:
+                msg = f"📊 Technical Signals\n\n"
+                for tf, signal in signals[coin].items():
+                    msg += f"{tf}: {signal}\n"
+                bot.send_message(chat_id, msg)
+        time.sleep(update_interval)
 
-    # Correct SL/TP
-    sl = price * 0.98 if "BUY" in prefix else price * 1.02
-    t1 = price * 1.02 if "BUY" in prefix else price * 0.98
-    t2 = price * 1.05 if "BUY" in prefix else price * 0.95
-
-    return f"{prefix} — {symbol} | Price: {price:.4f} | SL: {sl:.4f}, T1: {t1:.4f}, T2: {t2:.4f}"
-
-# === Bot Commands ===
-
-@bot.message_handler(commands=['start'])
-def start(message):
-    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    btn1 = types.KeyboardButton("📈 Live Prices")
-    btn2 = types.KeyboardButton("📊 Portfolio")
-    btn3 = types.KeyboardButton("🛠 Technical Signals")
-    btn4 = types.KeyboardButton("➕ Add Coin")
-    btn5 = types.KeyboardButton("➖ Remove Coin")
-    markup.add(btn1, btn2, btn3, btn4, btn5)
-    bot.send_message(message.chat.id, "Welcome! Choose an option:", reply_markup=markup)
-
-@bot.message_handler(func=lambda m: True)
-def handle_buttons(message):
+# === Telegram Bot Handlers ===
+@bot.message_handler(commands=["start"])
+def start_handler(message):
+    global chat_id
     chat_id = message.chat.id
-    text = message.text
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row("Live Prices", "Technical Signals")
+    markup.row("Top Movers", "Add Coin", "Remove Coin")
+    bot.send_message(chat_id, "Welcome! Use the buttons below to control the bot.", reply_markup=markup)
 
-    if text == "📈 Live Prices":
-        msg = ""
-        for c in coins:
-            p = fetch_price(c)
-            msg += f"{c}: {p if p else 'Error fetching price'}\n"
-        bot.send_message(chat_id, msg)
-
-    elif text == "📊 Portfolio":
-        total = 0
+@bot.message_handler(func=lambda message: True)
+def handle_buttons(message):
+    if message.text == "Live Prices":
         msg = "📊 Your Portfolio:\n\n"
-        for c in coins:
-            price = fetch_price(c)
-            total += price if price else 0
-            msg += f"{c}: {price if price else 'Error fetching price'}\n"
+        total = 0
+        for coin in coins:
+            price = fetch_price(coin)
+            if price:
+                total += price
+                msg += f"{coin}: ${price}\n"
+            else:
+                msg += f"{coin}: Error fetching price\n"
         msg += f"\n💰 Total Portfolio Value: ${total:.2f}"
-        bot.send_message(chat_id, msg)
-
-    elif text == "🛠 Technical Signals":
+        bot.send_message(message.chat.id, msg)
+    elif message.text == "Technical Signals":
+        signals = fetch_all_signals()
         msg = "📊 Technical Signals\n\n"
-        for c in coins:
-            msg += generate_signal(c) + "\n\n"
-        bot.send_message(chat_id, msg)
+        for coin, tf_data in signals.items():
+            msg += f"🔹 {coin}\n"
+            for tf, signal in tf_data.items():
+                msg += f"   ⏱ {tf}: {signal}\n"
+        bot.send_message(message.chat.id, msg)
+    elif message.text == "Top Movers":
+        movers = fetch_movers()
+        msg = "📈 Top Movers:\n"
+        for coin, change in movers:
+            msg += f"{coin}: {change}%\n"
+        bot.send_message(message.chat.id, msg)
+    elif message.text == "Add Coin":
+        bot.send_message(message.chat.id, "Send coin symbol to add (e.g., BTCUSDT)")
+        bot.register_next_step_handler(message, add_coin)
+    elif message.text == "Remove Coin":
+        bot.send_message(message.chat.id, "Send coin symbol to remove")
+        bot.register_next_step_handler(message, remove_coin)
 
-    elif text == "➕ Add Coin":
-        bot.send_message(chat_id, "Send me coin symbol to add (e.g., BTCUSDT)")
+def add_coin(message):
+    symbol = message.text.strip().upper()
+    if symbol not in coins:
+        coins.append(symbol)
+        bot.send_message(message.chat.id, f"{symbol} added!")
+    else:
+        bot.send_message(message.chat.id, f"{symbol} already in your list.")
 
-    elif text == "➖ Remove Coin":
-        bot.send_message(chat_id, "Send me coin symbol to remove (e.g., BTCUSDT)")
+def remove_coin(message):
+    symbol = message.text.strip().upper()
+    if symbol in coins:
+        coins.remove(symbol)
+        bot.send_message(message.chat.id, f"{symbol} removed!")
+    else:
+        bot.send_message(message.chat.id, f"{symbol} not in your list.")
 
-# === Webhook Setup ===
+# === Flask Webhook ===
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     json_str = request.get_data().decode("utf-8")
     update = telebot.types.Update.de_json(json_str)
     bot.process_new_updates([update])
-    return "!", 200
+    return "OK", 200
 
-@app.route("/")
-def index():
-    return "Bot is running!", 200
+# Set webhook
+bot.remove_webhook()
+bot.set_webhook(url=WEBHOOK_URL)
 
-# === Auto Updates ===
-def auto_update():
-    while True:
-        time.sleep(update_interval)
-        # Auto send signals
-        for c in coins:
-            chat_id = 1263295916  # your chat id
-            bot.send_message(chat_id, generate_signal(c))
+# Start auto updates in background
+threading.Thread(target=send_auto_updates, daemon=True).start()
 
-threading.Thread(target=auto_update, daemon=True).start()
-
-# === Start webhook server ===
+# Run Flask app
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 10000))
-    bot.remove_webhook()
-    bot.set_webhook(url=WEBHOOK_URL)
     app.run(host="0.0.0.0", port=port)
+
 
 
 
