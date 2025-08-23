@@ -10,7 +10,7 @@ from telebot import types
 
 # === CONFIG (hardcoded) ===
 BOT_TOKEN = "7638935379:AAEmLD7JHLZ36Ywh5tvmlP1F8xzrcNrym_Q"
-WEBHOOK_URL = "https://shayobott-1.onrender.com/" + BOT_TOKEN 
+WEBHOOK_URL = "https://shayobott.onrender.com/" + BOT_TOKEN 
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # Default portfolio and watchlist
