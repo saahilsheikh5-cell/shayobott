@@ -75,13 +75,13 @@ def analyze(symbol, interval="1h"):
     macd_v = macd.iloc[-1]
     sig_v = sig.iloc[-1]
 
-    # Adjusted thresholds for better signals
+    # Adjusted thresholds
     signal = "NEUTRAL"
     emoji = "⚪"
-    if rsi < 40 and macd_v > sig_v:
+    if rsi < 30:
         signal = "STRONG BUY"
         emoji = "🔺🟢"
-    elif rsi > 60 and macd_v < sig_v:
+    elif rsi > 70:
         signal = "STRONG SELL"
         emoji = "🔻🔴"
 
@@ -99,22 +99,20 @@ def get_top_movers(interval):
     df = pd.DataFrame(data)
     df["priceChangePercent"] = df["priceChangePercent"].astype(float)
 
-    if interval == "15m":
+    if interval in ["15m", "1h"]:
         movers = []
-        for sym in df["symbol"].unique():
-            k = get_klines(sym, "15m", 2)
+        symbols = df.sort_values("quoteVolume", ascending=False)["symbol"].head(50)  # top 50 by volume
+        kl_interval = "15m" if interval=="15m" else "1h"
+        for sym in symbols:
+            k = get_klines(sym, kl_interval, 2)
             if k is not None and len(k) >= 2:
                 old, new = k["c"].iloc[0], k["c"].iloc[-1]
                 change = ((new - old) / old) * 100
                 movers.append((sym, change))
         movers = sorted(movers, key=lambda x: x[1], reverse=True)[:10]
-    elif interval == "1h":
-        movers = df.sort_values("priceChangePercent", ascending=False).head(10)
-        movers = list(zip(movers["symbol"], movers["priceChangePercent"]))
     else:  # 24h
         movers = df.sort_values("priceChangePercent", ascending=False).head(10)
         movers = list(zip(movers["symbol"], movers["priceChangePercent"]))
-
     return movers
 
 # === MENUS ===
@@ -124,16 +122,16 @@ def main_menu():
     kb.row("🚀 Top Movers", "🤖 Auto Signals")
     return kb
 
-def timeframe_menu(prefix):
+def timeframe_menu(prefix, coin=None):
     kb = types.InlineKeyboardMarkup()
     kb.row(
-        types.InlineKeyboardButton("1m", callback_data=f"{prefix}_1m"),
-        types.InlineKeyboardButton("5m", callback_data=f"{prefix}_5m"),
-        types.InlineKeyboardButton("15m", callback_data=f"{prefix}_15m")
+        types.InlineKeyboardButton("1m", callback_data=f"{prefix}_{coin}_1m"),
+        types.InlineKeyboardButton("5m", callback_data=f"{prefix}_{coin}_5m"),
+        types.InlineKeyboardButton("15m", callback_data=f"{prefix}_{coin}_15m")
     )
     kb.row(
-        types.InlineKeyboardButton("1h", callback_data=f"{prefix}_1h"),
-        types.InlineKeyboardButton("1d", callback_data=f"{prefix}_1d")
+        types.InlineKeyboardButton("1h", callback_data=f"{prefix}_{coin}_1h"),
+        types.InlineKeyboardButton("1d", callback_data=f"{prefix}_{coin}_1d")
     )
     kb.row(types.InlineKeyboardButton("🔙 Back", callback_data="back_main"))
     return kb
@@ -156,7 +154,7 @@ def coins_list_menu(prefix):
     kb.row(types.InlineKeyboardButton("🔙 Back", callback_data="back_main"))
     return kb
 
-# === BOT HANDLERS ===
+# === HANDLERS ===
 @bot.message_handler(commands=["start"])
 def start(msg):
     bot.send_message(msg.chat.id, "Welcome to SaahilCryptoBot 🚀", reply_markup=main_menu())
@@ -192,13 +190,6 @@ def remove_coin(msg):
         return
     bot.send_message(msg.chat.id, "Select a coin to remove:", reply_markup=coins_list_menu("remove"))
 
-def remove_coin_callback(coin):
-    coins = load_coins()
-    if coin in coins:
-        coins.remove(coin)
-        save_coins(coins)
-    return coins
-
 @bot.message_handler(func=lambda m: m.text == "🚀 Top Movers")
 def top_movers(msg):
     bot.send_message(msg.chat.id, "Select timeframe:", reply_markup=movers_menu())
@@ -214,16 +205,19 @@ def callback_handler(call):
     if data == "back_main":
         bot.send_message(call.message.chat.id, "Back to main menu", reply_markup=main_menu())
 
-    # Technical Analysis for a coin
-    elif data.startswith("tech_"):
-        parts = data.split("_")
-        coin = parts[1]
-        tf = parts[2] if len(parts) > 2 else "1h"
+    # Show timeframe menu for a coin
+    elif data.startswith("tech_") and len(data.split("_"))==2:
+        coin = data.split("_")[1]
+        bot.send_message(call.message.chat.id, f"Select timeframe for {coin}:", reply_markup=timeframe_menu("tech", coin))
+
+    # Technical Analysis for coin + timeframe
+    elif data.startswith("tech_") and len(data.split("_"))==3:
+        _, coin, tf = data.split("_")
         result = analyze(coin, tf)
         if result:
             bot.send_message(
                 call.message.chat.id,
-                f"{coin} ({tf})\nPrice: {result['price']}\nRSI: {result['rsi']}\nMACD: {result['macd']}\nSignal: {result['signal']} {result['emoji']}"
+                f"[{tf}] {coin}\nPrice: {result['price']}\nRSI: {result['rsi']}\nMACD: {result['macd']}\nSignal: {result['signal']} {result['emoji']}"
             )
         else:
             bot.send_message(call.message.chat.id, f"Failed to fetch data for {coin}.")
@@ -231,7 +225,10 @@ def callback_handler(call):
     # Remove Coin
     elif data.startswith("remove_"):
         _, coin = data.split("_")
-        remove_coin_callback(coin)
+        coins = load_coins()
+        if coin in coins:
+            coins.remove(coin)
+            save_coins(coins)
         bot.send_message(call.message.chat.id, f"{coin} removed.", reply_markup=main_menu())
 
     # Top Movers
@@ -245,9 +242,11 @@ def callback_handler(call):
 
     # Auto Signals
     elif data.startswith("auto_"):
-        _, tf = data.split("_")
-        t = auto_signal_threads.get(tf)
-        if t and t.is_alive():
+        _, tf, coin = None, None, None
+        parts = data.split("_")
+        if len(parts) == 2:
+            tf = parts[1]
+        if tf in auto_signal_threads and auto_signal_threads[tf].is_alive():
             bot.send_message(call.message.chat.id, f"Auto signals already running for {tf}.")
         else:
             t = threading.Thread(target=run_auto_signals, args=(call.message.chat.id, tf), daemon=True)
@@ -287,3 +286,4 @@ if __name__ == "__main__":
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
