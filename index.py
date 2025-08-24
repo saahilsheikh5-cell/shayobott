@@ -11,7 +11,6 @@ from telebot import types
 
 # === CONFIG ===
 BOT_TOKEN = "7638935379:AAEmLD7JHLZ36Ywh5tvmlP1F8xzrcNrym_Q"
-WEBHOOK_URL = "https://shayobott-2.onrender.com/" + BOT_TOKEN
 BINANCE_URL = "https://api.binance.com/api/v3/klines"
 ALL_COINS_URL = "https://api.binance.com/api/v3/ticker/24hr"
 
@@ -178,7 +177,6 @@ def coins_list_menu(prefix):
 @bot.callback_query_handler(func=lambda c: True)
 def callback_handler(call):
     data = call.data
-
     if data == "back_main":
         bot.send_message(call.message.chat.id, "Back to main menu", reply_markup=main_menu())
         return
@@ -243,18 +241,52 @@ def run_auto_signals(chat_id, coin, interval):
             last_signal = result['signal']
         time.sleep(sleep_time)
 
-# === WEBHOOK ===
-@app.route("/" + BOT_TOKEN, methods=["POST"])
-def webhook():
-    bot.process_new_updates([telebot.types.Update.de_json(request.stream.read().decode("utf-8"))])
-    return "!", 200
+# === BOT COMMANDS ===
+@bot.message_handler(commands=["start"])
+def start(msg):
+    bot.send_message(msg.chat.id, "Welcome to SaahilCryptoBot 🚀", reply_markup=main_menu())
 
-@app.route("/")
-def index():
-    return "Bot running!"
+@bot.message_handler(func=lambda m: m.text == "📊 My Coins")
+def my_coins(msg):
+    coins = load_coins()
+    if not coins:
+        bot.send_message(msg.chat.id, "No coins added yet. Use ➕ Add Coin first.")
+        return
+    bot.send_message(msg.chat.id, "Select a coin for technical analysis:", reply_markup=coins_list_menu("tech"))
 
-# === RUN ===
+@bot.message_handler(func=lambda m: m.text == "➕ Add Coin")
+def add_coin(msg):
+    bot.send_message(msg.chat.id, "Type the coin symbol to add (e.g., BTCUSDT):")
+    bot.register_next_step_handler(msg, save_coin)
+
+def save_coin(msg):
+    coin = msg.text.strip().upper()
+    coins = load_coins()
+    if coin in coins:
+        bot.send_message(msg.chat.id, f"{coin} is already in your list.")
+        return
+    coins.append(coin)
+    save_coins(coins)
+    bot.send_message(msg.chat.id, f"{coin} added successfully.", reply_markup=main_menu())
+
+@bot.message_handler(func=lambda m: m.text == "➖ Remove Coin")
+def remove_coin(msg):
+    coins = load_coins()
+    if not coins:
+        bot.send_message(msg.chat.id, "No coins to remove.")
+        return
+    bot.send_message(msg.chat.id, "Select a coin to remove:", reply_markup=coins_list_menu("remove"))
+
+@bot.message_handler(func=lambda m: m.text == "🚀 Top Movers")
+def top_movers(msg):
+    bot.send_message(msg.chat.id, "Select timeframe:", reply_markup=movers_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🤖 Auto Signals")
+def auto_signals(msg):
+    bot.send_message(msg.chat.id, "Select timeframe for auto signals:", reply_markup=timeframe_menu("auto"))
+
+# === RUN BOT ===
 if __name__ == "__main__":
+    print("Bot running with polling mode")
     bot.remove_webhook()
-    bot.set_webhook(url=WEBHOOK_URL)
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    bot.infinity_polling()
