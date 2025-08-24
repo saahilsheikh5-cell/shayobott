@@ -20,10 +20,8 @@ app = Flask(__name__)
 
 # === STORAGE ===
 COINS_FILE = "coins.json"
-auto_signal_thread = None
-last_sent_signals = {}
+auto_signal_threads = {}
 lock = threading.Lock()
-CHAT_ID = 1263295916  # your chat id
 
 # === HELPER FUNCTIONS ===
 def load_coins():
@@ -48,7 +46,8 @@ def get_klines(symbol, interval, limit=100):
         url = f"{BINANCE_URL}?symbol={symbol}&interval={interval}&limit={limit}"
         data = requests.get(url, timeout=10).json()
         df = pd.DataFrame(data, columns=[
-            "time","o","h","l","c","v","ct","qv","tn","tb","qtb","ignore"
+            "time", "o", "h", "l", "c", "v",
+            "ct", "qv", "tn", "tb", "qtb", "ignore"
         ])
         df["c"] = df["c"].astype(float)
         return df
@@ -70,8 +69,23 @@ def get_rsi(series, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# === TECHNICAL ANALYSIS FOR MY COINS ===
-def analyze_my_coin(symbol, interval):
+def get_adx(df, n=14):
+    df["H-L"] = df["h"] - df["l"]
+    df["H-PC"] = abs(df["h"] - df["c"].shift(1))
+    df["L-PC"] = abs(df["l"] - df["c"].shift(1))
+    df["TR"] = df[["H-L","H-PC","L-PC"]].max(axis=1)
+    df["DMplus"] = np.where((df["h"] - df["h"].shift(1)) > (df["l"].shift(1) - df["l"]), df["h"] - df["h"].shift(1),0)
+    df["DMminus"] = np.where((df["l"].shift(1) - df["l"]) > (df["h"] - df["h"].shift(1)), df["l"].shift(1) - df["l"],0)
+    TRn = df["TR"].rolling(n).sum()
+    DMplus_n = df["DMplus"].rolling(n).sum()
+    DMminus_n = df["DMminus"].rolling(n).sum()
+    DIplus = 100 * (DMplus_n / TRn)
+    DIminus = 100 * (DMminus_n / TRn)
+    DX = 100 * abs(DIplus - DIminus) / (DIplus + DIminus)
+    ADX = DX.rolling(n).mean()
+    return ADX.iloc[-1]
+
+def analyze_my_coin(symbol, interval="1h"):
     df = get_klines(symbol, interval, 100)
     if df is None or df.empty:
         return None
@@ -84,53 +98,76 @@ def analyze_my_coin(symbol, interval):
     if rsi < 30:
         signal = "Buy"
         emoji = "🟢"
-        explanation = f"Price near support, RSI {round(rsi,2)} indicates oversold."
+        explanation = f"Price near support, RSI {round(rsi,2)} indicates oversold conditions."
     elif rsi > 70:
         signal = "Sell"
         emoji = "🔴"
-        explanation = f"Price near resistance, RSI {round(rsi,2)} indicates overbought."
+        explanation = f"Price near resistance, RSI {round(rsi,2)} indicates overbought conditions."
     else:
         signal = "Neutral"
         emoji = "⚪"
-        explanation = f"Price near SMA20({round(sma20,2)}) & EMA20({round(ema20,2)}), RSI {round(rsi,2)} suggests no strong momentum."
+        explanation = f"Price near SMA20({round(sma20,2)}) and EMA20({round(ema20,2)}), RSI {round(rsi,2)} suggests no strong momentum."
 
-    return {"price": round(price,2), "signal": signal, "emoji": emoji, "explanation": explanation}
+    return {
+        "price": round(price,2),
+        "signal": signal,
+        "emoji": emoji,
+        "explanation": explanation
+    }
 
-# === AUTO SIGNALS FOR ALL BINANCE COINS ===
-def analyze(symbol):
-    df = get_klines(symbol+"USDT", "15m", 100)
+def analyze(symbol, interval="15m"):
+    df = get_klines(symbol, interval, 100)
     if df is None or df.empty:
         return None
     close = df["c"]
     price = close.iloc[-1]
+    sma20 = get_sma(close,20).iloc[-1]
+    ema20 = get_ema(close,20).iloc[-1]
     rsi = get_rsi(close).iloc[-1]
+    adx = get_adx(df)
 
     if rsi < 20:
-        return {"price": round(price,5), "signal": "Strong Buy", "emoji": "🔺🟢"}
+        signal = "Strong Buy"
+        emoji = "🔺🟢"
+        stop_loss = round(price*0.995,4)
+        take_profit = round(price*1.02,4)
     elif rsi > 80:
-        return {"price": round(price,5), "signal": "Strong Sell", "emoji": "🔻🔴"}
+        signal = "Strong Sell"
+        emoji = "🔻🔴"
+        stop_loss = round(price*1.005,4)
+        take_profit = round(price*0.98,4)
     else:
         return None
 
-def run_auto_signals():
-    global last_sent_signals
-    while True:
-        try:
-            data = requests.get(ALL_COINS_URL, timeout=10).json()
-            for coin_data in data:
-                symbol = coin_data["symbol"]
-                if not symbol.endswith("USDT"):
-                    continue
-                result = analyze(get_coin_name(symbol))
-                if result:
-                    key = get_coin_name(symbol)
-                    with lock:
-                        if last_sent_signals.get(key) != result["signal"]:
-                            bot.send_message(CHAT_ID, f"🪙 {key} | ${result['price']}\n{result['emoji']} {result['signal']}")
-                            last_sent_signals[key] = result["signal"]
-        except:
-            pass
-        time.sleep(900)  # 15 minutes
+    return {
+        "price": round(price,6),
+        "signal": signal,
+        "emoji": emoji,
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "validity": interval
+    }
+
+def get_top_movers(interval):
+    data = requests.get(ALL_COINS_URL, timeout=10).json()
+    df = pd.DataFrame(data)
+    df["priceChangePercent"] = df["priceChangePercent"].astype(float)
+
+    if interval in ["15m","1h"]:
+        movers = []
+        symbols = df.sort_values("quoteVolume", ascending=False)["symbol"].head(50)
+        kl_interval = "15m" if interval=="15m" else "1h"
+        for sym in symbols:
+            k = get_klines(sym, kl_interval, 2)
+            if k is not None and len(k)>=2:
+                old,new = k["c"].iloc[0], k["c"].iloc[-1]
+                change = ((new-old)/old)*100
+                movers.append((get_coin_name(sym), round(change,2)))
+        movers = sorted(movers,key=lambda x:x[1],reverse=True)[:10]
+    else:  # 24h
+        movers = df.sort_values("priceChangePercent", ascending=False).head(10)
+        movers = [(get_coin_name(s), round(c,2)) for s,c in zip(movers["symbol"], movers["priceChangePercent"])]
+    return movers
 
 # === MENUS ===
 def main_menu():
@@ -139,10 +176,27 @@ def main_menu():
     kb.row("🚀 Top Movers","🤖 Auto Signals")
     return kb
 
-def timeframe_menu(prefix, coin):
+def timeframe_menu(prefix, coin=None):
     kb = types.InlineKeyboardMarkup()
-    for tf in ["1m","5m","15m","1h","1d"]:
-        kb.row(types.InlineKeyboardButton(tf, callback_data=f"{prefix}_{coin}_{tf}"))
+    kb.row(
+        types.InlineKeyboardButton("1m", callback_data=f"{prefix}_{coin}_1m"),
+        types.InlineKeyboardButton("5m", callback_data=f"{prefix}_{coin}_5m"),
+        types.InlineKeyboardButton("15m", callback_data=f"{prefix}_{coin}_15m")
+    )
+    kb.row(
+        types.InlineKeyboardButton("1h", callback_data=f"{prefix}_{coin}_1h"),
+        types.InlineKeyboardButton("1d", callback_data=f"{prefix}_{coin}_1d")
+    )
+    kb.row(types.InlineKeyboardButton("🔙 Back", callback_data="back_main"))
+    return kb
+
+def movers_menu():
+    kb = types.InlineKeyboardMarkup()
+    kb.row(
+        types.InlineKeyboardButton("15m", callback_data="movers_15m"),
+        types.InlineKeyboardButton("1h", callback_data="movers_1h"),
+        types.InlineKeyboardButton("24h", callback_data="movers_24h")
+    )
     kb.row(types.InlineKeyboardButton("🔙 Back", callback_data="back_main"))
     return kb
 
@@ -158,26 +212,80 @@ def coins_list_menu(prefix):
 @bot.callback_query_handler(func=lambda c: True)
 def callback_handler(call):
     data = call.data
-    if data=="back_main":
+    if data == "back_main":
         bot.send_message(call.message.chat.id,"Back to main menu", reply_markup=main_menu())
         return
 
-    if data.startswith("tech_") and len(data.split("_"))==2:
+    # Show timeframe menu for a coin
+    elif data.startswith("tech_") and len(data.split("_"))==2:
         coin = data.split("_")[1]
         bot.send_message(call.message.chat.id,f"Select timeframe for {get_coin_name(coin)}:", reply_markup=timeframe_menu("tech",coin))
         return
 
-    if data.startswith("tech_") and len(data.split("_"))==3:
+    # Technical Analysis for My Coins
+    elif data.startswith("tech_") and len(data.split("_"))==3:
         _, coin, tf = data.split("_")
         result = analyze_my_coin(coin, tf)
         if result:
             bot.send_message(
                 call.message.chat.id,
-                f"⏰ {tf}\n🪙 Coin: {get_coin_name(coin)} | ${result['price']}\n{result['emoji']} Direction Bias: {result['signal']}\n\nℹ️ {result['explanation']}"
+                f"⏰ Timeframe: {tf}\n🪙 Coin: {get_coin_name(coin)} | ${result['price']}\n{result['emoji']} Direction Bias: {result['signal']}\n\nℹ️ {result['explanation']}"
             )
         else:
             bot.send_message(call.message.chat.id,f"Failed to fetch data for {get_coin_name(coin)}.")
         return
+
+    # Top Movers
+    elif data.startswith("movers_"):
+        _, tf = data.split("_")
+        movers = get_top_movers(tf)
+        text = f"📈 Top Movers ({tf})\n\n"
+        for sym, chg in movers:
+            arrow = "🟢" if chg>=0 else "🔴"
+            text += f"{sym}: {arrow} {chg}%\n"
+        bot.send_message(call.message.chat.id,text)
+        return
+
+    # Auto Signals
+    elif data.startswith("auto_"):
+        tf = data.split("_")[1]
+        if tf in auto_signal_threads and auto_signal_threads[tf].is_alive():
+            bot.send_message(call.message.chat.id,f"Auto signals already running for {tf}.")
+        else:
+            t = threading.Thread(target=run_auto_signals, args=(call.message.chat.id, tf), daemon=True)
+            auto_signal_threads[tf] = t
+            t.start()
+            bot.send_message(call.message.chat.id,f"Started auto signals for {tf}.")
+        return
+
+    # Remove Coin
+    elif data.startswith("remove_"):
+        _, coin = data.split("_")
+        coins = load_coins()
+        if coin in coins:
+            coins.remove(coin)
+            save_coins(coins)
+        bot.send_message(call.message.chat.id,f"{get_coin_name(coin)} removed.", reply_markup=main_menu())
+        return
+
+# === AUTO SIGNALS ===
+def run_auto_signals(chat_id, interval):
+    last_signals = {}
+    sleep_time = {"1m":60,"5m":300,"15m":900,"1h":3600,"1d":86400}.get(interval,900)
+    while True:
+        data = requests.get(ALL_COINS_URL, timeout=10).json()
+        for coin_data in data:
+            sym = coin_data["symbol"]
+            result = analyze(sym, interval)
+            if result:
+                key = f"{sym}_{result['signal']}"
+                if last_signals.get(key) != True:
+                    bot.send_message(
+                        chat_id,
+                        f"🪙 {get_coin_name(sym)} | ${result['price']}\n{result['emoji']} {result['signal']}\nStop Loss: {result['stop_loss']} | Take Profit: {result['take_profit']} | Valid for: {result['validity']}"
+                    )
+                    last_signals[key] = True
+        time.sleep(sleep_time)
 
 # === MESSAGE HANDLERS ===
 @bot.message_handler(commands=["start"])
@@ -215,6 +323,34 @@ def remove_coin(msg):
         return
     bot.send_message(msg.chat.id,"Select a coin to remove:", reply_markup=coins_list_menu("remove"))
 
+@bot.message_handler(func=lambda m: m.text=="🚀 Top Movers")
+def top_movers(msg):
+    bot.send_message(msg.chat.id,"Select timeframe:", reply_markup=movers_menu())
+
+@bot.message_handler(func=lambda m: m.text=="🤖 Auto Signals")
+def auto_signals(msg):
+    kb = types.InlineKeyboardMarkup()
+    for tf in ["1m","5m","15m","1h","1d"]:
+        kb.row(types.InlineKeyboardButton(tf, callback_data=f"auto_{tf}"))
+    kb.row(types.InlineKeyboardButton("🔙 Back", callback_data="back_main"))
+    bot.send_message(msg.chat.id,"Select timeframe for auto signals:", reply_markup=kb)
+
+@bot.message_handler(commands=["analyse"])
+def analyse_coin(msg):
+    parts = msg.text.strip().split()
+    if len(parts)!=2:
+        bot.send_message(msg.chat.id,"Usage: /analyse <COIN_SYMBOL> (e.g., /analyse BTCUSDT)")
+        return
+    symbol = parts[1].upper()
+    result_text = ""
+    for tf in ["1m","5m","15m","1h","1d"]:
+        result = analyze_my_coin(symbol, tf)
+        if result:
+            result_text += f"⏰ {tf}: {result['emoji']} {result['signal']} (Price ${result['price']})\n"
+        else:
+            result_text += f"⏰ {tf}: Failed to fetch data\n"
+    bot.send_message(msg.chat.id,f"🔎 Technical Analysis for {symbol}:\n\n{result_text}")
+
 # === WEBHOOK ===
 @app.route("/" + BOT_TOKEN, methods=["POST"])
 def webhook():
@@ -229,8 +365,7 @@ def index():
 if __name__=="__main__":
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
-    t = threading.Thread(target=run_auto_signals, daemon=True)
-    t.start()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)))
+
 
 
