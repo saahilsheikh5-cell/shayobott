@@ -18,7 +18,7 @@ ALL_COINS_URL = "https://api.binance.com/api/v3/ticker/24hr"
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# === STORAGE FILE ===
+# === STORAGE ===
 COINS_FILE = "coins.json"
 auto_signal_threads = {}
 lock = threading.Lock()
@@ -75,12 +75,13 @@ def analyze(symbol, interval="1h"):
     macd_v = macd.iloc[-1]
     sig_v = sig.iloc[-1]
 
+    # Adjusted thresholds for better signals
     signal = "NEUTRAL"
     emoji = "⚪"
-    if rsi < 35 and macd_v > sig_v:
+    if rsi < 40 and macd_v > sig_v:
         signal = "STRONG BUY"
         emoji = "🔺🟢"
-    elif rsi > 65 and macd_v < sig_v:
+    elif rsi > 60 and macd_v < sig_v:
         signal = "STRONG SELL"
         emoji = "🔻🔴"
 
@@ -98,10 +99,10 @@ def get_top_movers(interval):
     df = pd.DataFrame(data)
     df["priceChangePercent"] = df["priceChangePercent"].astype(float)
 
-    if interval == "5m":
+    if interval == "15m":
         movers = []
         for sym in df["symbol"].unique():
-            k = get_klines(sym, "5m", 2)
+            k = get_klines(sym, "15m", 2)
             if k is not None and len(k) >= 2:
                 old, new = k["c"].iloc[0], k["c"].iloc[-1]
                 change = ((new - old) / old) * 100
@@ -123,16 +124,16 @@ def main_menu():
     kb.row("🚀 Top Movers", "🤖 Auto Signals")
     return kb
 
-def timeframe_menu(callback_prefix):
+def timeframe_menu(prefix):
     kb = types.InlineKeyboardMarkup()
     kb.row(
-        types.InlineKeyboardButton("1m", callback_data=f"{callback_prefix}_1m"),
-        types.InlineKeyboardButton("5m", callback_data=f"{callback_prefix}_5m"),
-        types.InlineKeyboardButton("15m", callback_data=f"{callback_prefix}_15m")
+        types.InlineKeyboardButton("1m", callback_data=f"{prefix}_1m"),
+        types.InlineKeyboardButton("5m", callback_data=f"{prefix}_5m"),
+        types.InlineKeyboardButton("15m", callback_data=f"{prefix}_15m")
     )
     kb.row(
-        types.InlineKeyboardButton("1h", callback_data=f"{callback_prefix}_1h"),
-        types.InlineKeyboardButton("1d", callback_data=f"{callback_prefix}_1d")
+        types.InlineKeyboardButton("1h", callback_data=f"{prefix}_1h"),
+        types.InlineKeyboardButton("1d", callback_data=f"{prefix}_1d")
     )
     kb.row(types.InlineKeyboardButton("🔙 Back", callback_data="back_main"))
     return kb
@@ -140,9 +141,9 @@ def timeframe_menu(callback_prefix):
 def movers_menu():
     kb = types.InlineKeyboardMarkup()
     kb.row(
-        types.InlineKeyboardButton("⏱ 5m", callback_data="movers_5m"),
-        types.InlineKeyboardButton("⏱ 1h", callback_data="movers_1h"),
-        types.InlineKeyboardButton("⏱ 24h", callback_data="movers_24h")
+        types.InlineKeyboardButton("15m", callback_data="movers_15m"),
+        types.InlineKeyboardButton("1h", callback_data="movers_1h"),
+        types.InlineKeyboardButton("24h", callback_data="movers_24h")
     )
     kb.row(types.InlineKeyboardButton("🔙 Back", callback_data="back_main"))
     return kb
@@ -212,9 +213,12 @@ def callback_handler(call):
     data = call.data
     if data == "back_main":
         bot.send_message(call.message.chat.id, "Back to main menu", reply_markup=main_menu())
+
+    # Technical Analysis for a coin
     elif data.startswith("tech_"):
-        _, tf, *coin = data.split("_")
-        coin = "_".join(coin)
+        parts = data.split("_")
+        coin = parts[1]
+        tf = parts[2] if len(parts) > 2 else "1h"
         result = analyze(coin, tf)
         if result:
             bot.send_message(
@@ -223,17 +227,23 @@ def callback_handler(call):
             )
         else:
             bot.send_message(call.message.chat.id, f"Failed to fetch data for {coin}.")
+
+    # Remove Coin
     elif data.startswith("remove_"):
         _, coin = data.split("_")
         remove_coin_callback(coin)
         bot.send_message(call.message.chat.id, f"{coin} removed.", reply_markup=main_menu())
+
+    # Top Movers
     elif data.startswith("movers_"):
         _, tf = data.split("_")
         movers = get_top_movers(tf)
         text = f"📈 Top Movers ({tf})\n\n"
         for sym, chg in movers:
-            text += f"   {sym}: 🟢 {round(chg,2)}%\n"
+            text += f"{sym}: 🟢 {round(chg,2)}%\n"
         bot.send_message(call.message.chat.id, text)
+
+    # Auto Signals
     elif data.startswith("auto_"):
         _, tf = data.split("_")
         t = auto_signal_threads.get(tf)
@@ -248,7 +258,7 @@ def callback_handler(call):
 # === AUTO SIGNALS FUNCTION ===
 def run_auto_signals(chat_id, interval):
     last_signals = {}
-    sleep_time = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600}.get(interval, 60)
+    sleep_time = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400}.get(interval, 60)
     while True:
         coins = load_coins()
         for coin in coins:
@@ -277,4 +287,3 @@ if __name__ == "__main__":
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
