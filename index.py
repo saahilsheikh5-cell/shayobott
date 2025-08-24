@@ -44,9 +44,16 @@ def get_klines(symbol, interval, limit=100):
             "ct", "qv", "tn", "tb", "qtb", "ignore"
         ])
         df["c"] = df["c"].astype(float)
+        df["o"] = df["o"].astype(float)
         return df
     except:
         return None
+
+def get_sma(series, period=20):
+    return series.rolling(period).mean()
+
+def get_ema(series, period=20):
+    return series.ewm(span=period, adjust=False).mean()
 
 def get_rsi(series, period=14):
     delta = series.diff()
@@ -57,60 +64,70 @@ def get_rsi(series, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-def get_macd(series, fast=12, slow=26, signal=9):
-    exp1 = series.ewm(span=fast, adjust=False).mean()
-    exp2 = series.ewm(span=slow, adjust=False).mean()
-    macd = exp1 - exp2
-    signal_line = macd.ewm(span=signal, adjust=False).mean()
-    return macd, signal_line
-
 def analyze(symbol, interval="1h"):
     df = get_klines(symbol, interval, 100)
     if df is None or df.empty:
         return None
-    close = df["c"]
-    price = close.iloc[-1]
-    rsi = get_rsi(close).iloc[-1]
-    macd, sig = get_macd(close)
-    macd_v = macd.iloc[-1]
-    sig_v = sig.iloc[-1]
 
-    # Adjusted thresholds
+    close = df["c"]
+    open_p = df["o"]
+    price = close.iloc[-1]
+    prev_price = close.iloc[-2]
+    perc_change = ((price - prev_price)/prev_price)*100
+
+    sma20 = get_sma(close, 20).iloc[-1]
+    ema20 = get_ema(close, 20).iloc[-1]
+    rsi = get_rsi(close).iloc[-1]
+
     signal = "NEUTRAL"
     emoji = "⚪"
+    trend_desc = ""
+
     if rsi < 30:
         signal = "STRONG BUY"
         emoji = "🔺🟢"
     elif rsi > 70:
         signal = "STRONG SELL"
         emoji = "🔻🔴"
+    else:
+        if price > sma20 and price > ema20:
+            trend_desc = "Price is above SMA20 and EMA20, RSI indicates upward momentum."
+            signal = "BUY"
+            emoji = "🟢"
+        elif price < sma20 and price < ema20:
+            trend_desc = "Price is below SMA20 and EMA20, RSI indicates downward momentum."
+            signal = "SELL"
+            emoji = "🔴"
+        else:
+            trend_desc = "Price near SMA20/EMA20, RSI neutral."
 
     return {
-        "price": price,
+        "price": round(price, 4),
+        "perc_change": round(perc_change, 2),
+        "sma20": round(sma20, 4),
+        "ema20": round(ema20, 4),
         "rsi": round(rsi, 2),
-        "macd": round(macd_v, 2),
-        "sig": round(sig_v, 2),
         "signal": signal,
-        "emoji": emoji
+        "emoji": emoji,
+        "trend_desc": trend_desc
     }
 
 def get_top_movers(interval):
-    data = requests.get(ALL_COINS_URL, timeout=10).json()
-    df = pd.DataFrame(data)
-    df["priceChangePercent"] = df["priceChangePercent"].astype(float)
-
     if interval in ["15m", "1h"]:
+        data = requests.get(ALL_COINS_URL, timeout=10).json()
+        df = pd.DataFrame(data)
+        df = df.sort_values("quoteVolume", ascending=False).head(50)
         movers = []
-        symbols = df.sort_values("quoteVolume", ascending=False)["symbol"].head(50)  # top 50 by volume
-        kl_interval = "15m" if interval=="15m" else "1h"
-        for sym in symbols:
-            k = get_klines(sym, kl_interval, 2)
-            if k is not None and len(k) >= 2:
-                old, new = k["c"].iloc[0], k["c"].iloc[-1]
-                change = ((new - old) / old) * 100
+        for sym in df["symbol"]:
+            k = get_klines(sym, interval, 2)
+            if k is not None and len(k) >=2:
+                change = ((k['c'].iloc[-1]-k['c'].iloc[0])/k['c'].iloc[0])*100
                 movers.append((sym, change))
         movers = sorted(movers, key=lambda x: x[1], reverse=True)[:10]
-    else:  # 24h
+    else:
+        data = requests.get(ALL_COINS_URL, timeout=10).json()
+        df = pd.DataFrame(data)
+        df["priceChangePercent"] = df["priceChangePercent"].astype(float)
         movers = df.sort_values("priceChangePercent", ascending=False).head(10)
         movers = list(zip(movers["symbol"], movers["priceChangePercent"]))
     return movers
@@ -205,24 +222,22 @@ def callback_handler(call):
     if data == "back_main":
         bot.send_message(call.message.chat.id, "Back to main menu", reply_markup=main_menu())
 
-    # Show timeframe menu for a coin
     elif data.startswith("tech_") and len(data.split("_"))==2:
         coin = data.split("_")[1]
         bot.send_message(call.message.chat.id, f"Select timeframe for {coin}:", reply_markup=timeframe_menu("tech", coin))
 
-    # Technical Analysis for coin + timeframe
     elif data.startswith("tech_") and len(data.split("_"))==3:
         _, coin, tf = data.split("_")
         result = analyze(coin, tf)
         if result:
-            bot.send_message(
-                call.message.chat.id,
-                f"[{tf}] {coin}\nPrice: {result['price']}\nRSI: {result['rsi']}\nMACD: {result['macd']}\nSignal: {result['signal']} {result['emoji']}"
-            )
+            text = (f"⏰ Timeframe: {tf}\n"
+                    f"🪙 Coin: {coin} | ${result['price']} | {result['perc_change']}%\n\n"
+                    f"⬆️ Direction Bias: {result['signal']} {result['emoji']}\n\n"
+                    f"ℹ️ {result['trend_desc']}")
+            bot.send_message(call.message.chat.id, text)
         else:
             bot.send_message(call.message.chat.id, f"Failed to fetch data for {coin}.")
 
-    # Remove Coin
     elif data.startswith("remove_"):
         _, coin = data.split("_")
         coins = load_coins()
@@ -231,21 +246,16 @@ def callback_handler(call):
             save_coins(coins)
         bot.send_message(call.message.chat.id, f"{coin} removed.", reply_markup=main_menu())
 
-    # Top Movers
     elif data.startswith("movers_"):
         _, tf = data.split("_")
         movers = get_top_movers(tf)
         text = f"📈 Top Movers ({tf})\n\n"
         for sym, chg in movers:
-            text += f"{sym}: 🟢 {round(chg,2)}%\n"
+            text += f"{sym}: {round(chg,2)}%\n"
         bot.send_message(call.message.chat.id, text)
 
-    # Auto Signals
     elif data.startswith("auto_"):
-        _, tf, coin = None, None, None
-        parts = data.split("_")
-        if len(parts) == 2:
-            tf = parts[1]
+        tf = data.split("_")[1]
         if tf in auto_signal_threads and auto_signal_threads[tf].is_alive():
             bot.send_message(call.message.chat.id, f"Auto signals already running for {tf}.")
         else:
@@ -254,7 +264,7 @@ def callback_handler(call):
             t.start()
             bot.send_message(call.message.chat.id, f"Started auto signals for {tf} timeframe.")
 
-# === AUTO SIGNALS FUNCTION ===
+# === AUTO SIGNALS ===
 def run_auto_signals(chat_id, interval):
     last_signals = {}
     sleep_time = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400}.get(interval, 60)
@@ -264,10 +274,11 @@ def run_auto_signals(chat_id, interval):
             result = analyze(coin, interval)
             if result:
                 if last_signals.get(coin) != result['signal']:
-                    bot.send_message(
-                        chat_id,
-                        f"[{interval}] {coin}\nPrice: {result['price']}\nRSI: {result['rsi']}\nMACD: {result['macd']}\nSignal: {result['signal']} {result['emoji']}"
-                    )
+                    text = (f"⏰ Timeframe: {interval}\n"
+                            f"🪙 Coin: {coin} | ${result['price']} | {result['perc_change']}%\n\n"
+                            f"⬆️ Direction Bias: {result['signal']} {result['emoji']}\n\n"
+                            f"ℹ️ {result['trend_desc']}")
+                    bot.send_message(chat_id, text)
                     last_signals[coin] = result['signal']
         time.sleep(sleep_time)
 
@@ -286,4 +297,3 @@ if __name__ == "__main__":
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
