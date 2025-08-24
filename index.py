@@ -64,6 +64,11 @@ def get_rsi(series, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
+def get_support_resistance(df):
+    recent_high = df['h'].iloc[-20:].max()
+    recent_low = df['l'].iloc[-20:].min()
+    return round(recent_high, 2), round(recent_low, 2)
+
 def analyze(symbol, interval="1h"):
     df = get_klines(symbol, interval, 100)
     if df is None or df.empty:
@@ -78,38 +83,39 @@ def analyze(symbol, interval="1h"):
     sma20 = get_sma(close, 20).iloc[-1]
     ema20 = get_ema(close, 20).iloc[-1]
     rsi = get_rsi(close).iloc[-1]
+    high, low = get_support_resistance(df)
 
-    signal = "NEUTRAL"
+    signal = "Neutral"
     emoji = "⚪"
-    trend_desc = ""
+    explanation = ""
 
     if rsi < 30:
-        signal = "STRONG BUY"
+        signal = "Strong Buy"
         emoji = "🔺🟢"
+        explanation = f"The current price of {symbol} is near support at {low}, and RSI indicates oversold conditions. Potential upward move expected."
     elif rsi > 70:
-        signal = "STRONG SELL"
+        signal = "Strong Sell"
         emoji = "🔻🔴"
+        explanation = f"The current price of {symbol} is near resistance at {high}, and RSI indicates overbought conditions. Potential downward move expected."
     else:
         if price > sma20 and price > ema20:
-            trend_desc = "Price is above SMA20 and EMA20, RSI indicates upward momentum."
-            signal = "BUY"
+            signal = "Buy"
             emoji = "🟢"
+            explanation = f"The current price of {symbol} is above both the SMA20 ({round(sma20,2)}) and EMA20 ({round(ema20,2)}), indicating strong support around {round(price*0.995,2)}. RSI at {round(rsi,2)} suggests upward momentum."
         elif price < sma20 and price < ema20:
-            trend_desc = "Price is below SMA20 and EMA20, RSI indicates downward momentum."
-            signal = "SELL"
+            signal = "Sell"
             emoji = "🔴"
+            explanation = f"The current price of {symbol} is below both the SMA20 ({round(sma20,2)}) and EMA20 ({round(ema20,2)}), indicating resistance around {round(price*1.005,2)}. RSI at {round(rsi,2)} suggests downward momentum."
         else:
-            trend_desc = "Price near SMA20/EMA20, RSI neutral."
+            signal = "Neutral"
+            explanation = f"The current price of {symbol} is near SMA20 ({round(sma20,2)}) and EMA20 ({round(ema20,2)}), with RSI at {round(rsi,2)}. Trend strength appears weak, suggesting a neutral stance."
 
     return {
-        "price": round(price, 4),
+        "price": round(price, 2),
         "perc_change": round(perc_change, 2),
-        "sma20": round(sma20, 4),
-        "ema20": round(ema20, 4),
-        "rsi": round(rsi, 2),
         "signal": signal,
         "emoji": emoji,
-        "trend_desc": trend_desc
+        "explanation": explanation
     }
 
 def get_top_movers(interval):
@@ -232,8 +238,8 @@ def callback_handler(call):
         if result:
             text = (f"⏰ Timeframe: {tf}\n"
                     f"🪙 Coin: {coin} | ${result['price']} | {result['perc_change']}%\n\n"
-                    f"⬆️ Direction Bias: {result['signal']} {result['emoji']}\n\n"
-                    f"ℹ️ {result['trend_desc']}")
+                    f"⚪ Direction Bias: {result['signal']} {result['emoji']}\n\n"
+                    f"ℹ️ {result['explanation']}")
             bot.send_message(call.message.chat.id, text)
         else:
             bot.send_message(call.message.chat.id, f"Failed to fetch data for {coin}.")
@@ -272,14 +278,13 @@ def run_auto_signals(chat_id, interval):
         coins = load_coins()
         for coin in coins:
             result = analyze(coin, interval)
-            if result:
-                if last_signals.get(coin) != result['signal']:
-                    text = (f"⏰ Timeframe: {interval}\n"
-                            f"🪙 Coin: {coin} | ${result['price']} | {result['perc_change']}%\n\n"
-                            f"⬆️ Direction Bias: {result['signal']} {result['emoji']}\n\n"
-                            f"ℹ️ {result['trend_desc']}")
-                    bot.send_message(chat_id, text)
-                    last_signals[coin] = result['signal']
+            if result and last_signals.get(coin) != result['signal']:
+                text = (f"⏰ Timeframe: {interval}\n"
+                        f"🪙 Coin: {coin} | ${result['price']} | {result['perc_change']}%\n\n"
+                        f"⚪ Direction Bias: {result['signal']} {result['emoji']}\n\n"
+                        f"ℹ️ {result['explanation']}")
+                bot.send_message(chat_id, text)
+                last_signals[coin] = result['signal']
         time.sleep(sleep_time)
 
 # === WEBHOOK ===
@@ -297,3 +302,4 @@ if __name__ == "__main__":
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
