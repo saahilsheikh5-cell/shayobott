@@ -4,13 +4,13 @@ import telebot
 import requests
 import pandas as pd
 import numpy as np
-import time
 import threading
 from flask import Flask, request
 from telebot import types
 
 # === CONFIG ===
 BOT_TOKEN = "7638935379:AAEmLD7JHLZ36Ywh5tvmlP1F8xzrcNrym_Q"
+WEBHOOK_URL = "https://shayobott-2.onrender.com/" + BOT_TOKEN
 BINANCE_URL = "https://api.binance.com/api/v3/klines"
 ALL_COINS_URL = "https://api.binance.com/api/v3/ticker/24hr"
 
@@ -285,8 +285,18 @@ def top_movers(msg):
 def auto_signals(msg):
     bot.send_message(msg.chat.id, "Select timeframe for auto signals:", reply_markup=timeframe_menu("auto"))
 
-# === RUN BOT ===
+# === WEBHOOK ===
+@app.route("/" + BOT_TOKEN, methods=["POST"])
+def webhook():
+    bot.process_new_updates([telebot.types.Update.de_json(request.stream.read().decode("utf-8"))])
+    return "!", 200
+
+@app.route("/")
+def index():
+    return "Bot running!"
+
+# === RUN ===
 if __name__ == "__main__":
-    print("Bot running with polling mode")
     bot.remove_webhook()
-    bot.infinity_polling()
+    bot.set_webhook(url=WEBHOOK_URL)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
