@@ -1,1 +1,14 @@
-[]
+[
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "SOLUSDT",
+    "ADAUSDT",
+    "XRPUSDT",
+    "DOTUSDT",
+    "DOGEUSDT",
+    "LTCUSDT",
+    "AVAXUSDT"
+]
+
+
