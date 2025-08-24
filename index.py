@@ -1,4 +1,5 @@
 import os
+import json
 import telebot
 import requests
 import pandas as pd
@@ -12,18 +13,28 @@ from telebot import types
 BOT_TOKEN = "7638935379:AAEmLD7JHLZ36Ywh5tvmlP1F8xzrcNrym_Q"
 WEBHOOK_URL = "https://shayobott-2.onrender.com/" + BOT_TOKEN
 BINANCE_URL = "https://api.binance.com/api/v3/klines"
-PRICE_URL = "https://api.binance.com/api/v3/ticker/price"
 ALL_COINS_URL = "https://api.binance.com/api/v3/ticker/24hr"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# === STORAGE ===
-user_coins = {}
-user_auto_signals = {}
+# === STORAGE FILE ===
+COINS_FILE = "coins.json"
+auto_signal_threads = {}
 lock = threading.Lock()
 
-# === HELPERS ===
+# === HELPER FUNCTIONS ===
+def load_coins():
+    if not os.path.exists(COINS_FILE):
+        with open(COINS_FILE, "w") as f:
+            json.dump([], f)
+    with open(COINS_FILE, "r") as f:
+        return json.load(f)
+
+def save_coins(coins):
+    with open(COINS_FILE, "w") as f:
+        json.dump(coins, f)
+
 def get_klines(symbol, interval, limit=100):
     try:
         url = f"{BINANCE_URL}?symbol={symbol}&interval={interval}&limit={limit}"
@@ -87,7 +98,6 @@ def get_top_movers(interval):
     df = pd.DataFrame(data)
     df["priceChangePercent"] = df["priceChangePercent"].astype(float)
 
-    # Use 5m/1h/24h equivalent
     if interval == "5m":
         movers = []
         for sym in df["symbol"].unique():
@@ -106,24 +116,23 @@ def get_top_movers(interval):
 
     return movers
 
-# === BOT MENUS ===
+# === MENUS ===
 def main_menu():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row("➕ Add Coin", "📊 My Coins")
-    kb.row("📈 Technical Signals", "🤖 Auto Signals")
-    kb.row("🚀 Top Movers")
+    kb.row("📊 My Coins", "➕ Add Coin", "➖ Remove Coin")
+    kb.row("🚀 Top Movers", "🤖 Auto Signals")
     return kb
 
-def timeframe_menu(back_to):
+def timeframe_menu(callback_prefix):
     kb = types.InlineKeyboardMarkup()
     kb.row(
-        types.InlineKeyboardButton("1m", callback_data=f"{back_to}_1m"),
-        types.InlineKeyboardButton("5m", callback_data=f"{back_to}_5m"),
-        types.InlineKeyboardButton("15m", callback_data=f"{back_to}_15m")
+        types.InlineKeyboardButton("1m", callback_data=f"{callback_prefix}_1m"),
+        types.InlineKeyboardButton("5m", callback_data=f"{callback_prefix}_5m"),
+        types.InlineKeyboardButton("15m", callback_data=f"{callback_prefix}_15m")
     )
     kb.row(
-        types.InlineKeyboardButton("1h", callback_data=f"{back_to}_1h"),
-        types.InlineKeyboardButton("1d", callback_data=f"{back_to}_1d")
+        types.InlineKeyboardButton("1h", callback_data=f"{callback_prefix}_1h"),
+        types.InlineKeyboardButton("1d", callback_data=f"{callback_prefix}_1d")
     )
     kb.row(types.InlineKeyboardButton("🔙 Back", callback_data="back_main"))
     return kb
@@ -138,35 +147,120 @@ def movers_menu():
     kb.row(types.InlineKeyboardButton("🔙 Back", callback_data="back_main"))
     return kb
 
-# === HANDLERS ===
+def coins_list_menu(prefix):
+    coins = load_coins()
+    kb = types.InlineKeyboardMarkup()
+    for coin in coins:
+        kb.row(types.InlineKeyboardButton(coin, callback_data=f"{prefix}_{coin}"))
+    kb.row(types.InlineKeyboardButton("🔙 Back", callback_data="back_main"))
+    return kb
+
+# === BOT HANDLERS ===
 @bot.message_handler(commands=["start"])
 def start(msg):
     bot.send_message(msg.chat.id, "Welcome to SaahilCryptoBot 🚀", reply_markup=main_menu())
 
+@bot.message_handler(func=lambda m: m.text == "📊 My Coins")
+def my_coins(msg):
+    coins = load_coins()
+    if not coins:
+        bot.send_message(msg.chat.id, "No coins added yet. Use ➕ Add Coin first.")
+        return
+    bot.send_message(msg.chat.id, "Select a coin for technical analysis:", reply_markup=coins_list_menu("tech"))
+
+@bot.message_handler(func=lambda m: m.text == "➕ Add Coin")
+def add_coin(msg):
+    bot.send_message(msg.chat.id, "Type the coin symbol to add (e.g., BTCUSDT):")
+    bot.register_next_step_handler(msg, save_coin)
+
+def save_coin(msg):
+    coin = msg.text.strip().upper()
+    coins = load_coins()
+    if coin in coins:
+        bot.send_message(msg.chat.id, f"{coin} is already in your list.")
+        return
+    coins.append(coin)
+    save_coins(coins)
+    bot.send_message(msg.chat.id, f"{coin} added successfully.", reply_markup=main_menu())
+
+@bot.message_handler(func=lambda m: m.text == "➖ Remove Coin")
+def remove_coin(msg):
+    coins = load_coins()
+    if not coins:
+        bot.send_message(msg.chat.id, "No coins to remove.")
+        return
+    bot.send_message(msg.chat.id, "Select a coin to remove:", reply_markup=coins_list_menu("remove"))
+
+def remove_coin_callback(coin):
+    coins = load_coins()
+    if coin in coins:
+        coins.remove(coin)
+        save_coins(coins)
+    return coins
+
 @bot.message_handler(func=lambda m: m.text == "🚀 Top Movers")
-def movers(msg):
+def top_movers(msg):
     bot.send_message(msg.chat.id, "Select timeframe:", reply_markup=movers_menu())
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("movers"))
-def cb_movers(call):
-    tf = call.data.split("_")[1]
-    movers = get_top_movers(tf)
-    text = f"📈 Top Movers ({tf})\n\n"
-    for sym, chg in movers:
-        text += f"   {sym}: 🟢 {round(chg,2)}%\n"
-    bot.send_message(call.message.chat.id, text)
-
-@bot.message_handler(func=lambda m: m.text == "📈 Technical Signals")
-def tech(msg):
-    bot.send_message(msg.chat.id, "Choose timeframe:", reply_markup=timeframe_menu("tech"))
-
 @bot.message_handler(func=lambda m: m.text == "🤖 Auto Signals")
-def auto(msg):
-    bot.send_message(msg.chat.id, "Choose auto-signal timeframe:", reply_markup=timeframe_menu("auto"))
+def auto_signals(msg):
+    bot.send_message(msg.chat.id, "Select timeframe for auto signals:", reply_markup=timeframe_menu("auto"))
 
-@bot.callback_query_handler(func=lambda c: c.data == "back_main")
-def cb_back(call):
-    bot.send_message(call.message.chat.id, "Back to main menu", reply_markup=main_menu())
+# === CALLBACK HANDLER ===
+@bot.callback_query_handler(func=lambda c: True)
+def callback_handler(call):
+    data = call.data
+    if data == "back_main":
+        bot.send_message(call.message.chat.id, "Back to main menu", reply_markup=main_menu())
+    elif data.startswith("tech_"):
+        _, tf, *coin = data.split("_")
+        coin = "_".join(coin)
+        result = analyze(coin, tf)
+        if result:
+            bot.send_message(
+                call.message.chat.id,
+                f"{coin} ({tf})\nPrice: {result['price']}\nRSI: {result['rsi']}\nMACD: {result['macd']}\nSignal: {result['signal']} {result['emoji']}"
+            )
+        else:
+            bot.send_message(call.message.chat.id, f"Failed to fetch data for {coin}.")
+    elif data.startswith("remove_"):
+        _, coin = data.split("_")
+        remove_coin_callback(coin)
+        bot.send_message(call.message.chat.id, f"{coin} removed.", reply_markup=main_menu())
+    elif data.startswith("movers_"):
+        _, tf = data.split("_")
+        movers = get_top_movers(tf)
+        text = f"📈 Top Movers ({tf})\n\n"
+        for sym, chg in movers:
+            text += f"   {sym}: 🟢 {round(chg,2)}%\n"
+        bot.send_message(call.message.chat.id, text)
+    elif data.startswith("auto_"):
+        _, tf = data.split("_")
+        t = auto_signal_threads.get(tf)
+        if t and t.is_alive():
+            bot.send_message(call.message.chat.id, f"Auto signals already running for {tf}.")
+        else:
+            t = threading.Thread(target=run_auto_signals, args=(call.message.chat.id, tf), daemon=True)
+            auto_signal_threads[tf] = t
+            t.start()
+            bot.send_message(call.message.chat.id, f"Started auto signals for {tf} timeframe.")
+
+# === AUTO SIGNALS FUNCTION ===
+def run_auto_signals(chat_id, interval):
+    last_signals = {}
+    sleep_time = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600}.get(interval, 60)
+    while True:
+        coins = load_coins()
+        for coin in coins:
+            result = analyze(coin, interval)
+            if result:
+                if last_signals.get(coin) != result['signal']:
+                    bot.send_message(
+                        chat_id,
+                        f"[{interval}] {coin}\nPrice: {result['price']}\nRSI: {result['rsi']}\nMACD: {result['macd']}\nSignal: {result['signal']} {result['emoji']}"
+                    )
+                    last_signals[coin] = result['signal']
+        time.sleep(sleep_time)
 
 # === WEBHOOK ===
 @app.route("/" + BOT_TOKEN, methods=["POST"])
@@ -183,11 +277,4 @@ if __name__ == "__main__":
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
-
-
-
-
-
-
 
