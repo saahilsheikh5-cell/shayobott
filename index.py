@@ -43,8 +43,7 @@ def get_klines(symbol, interval, limit=100):
             "time", "o", "h", "l", "c", "v",
             "ct", "qv", "tn", "tb", "qtb", "ignore"
         ])
-        df["c"] = df["c"].astype(float)
-        df["o"] = df["o"].astype(float)
+        df = df.astype({"c": float, "o": float, "h": float, "l": float})
         return df
     except:
         return None
@@ -75,7 +74,6 @@ def analyze(symbol, interval="1h"):
         return None
 
     close = df["c"]
-    open_p = df["o"]
     price = close.iloc[-1]
     prev_price = close.iloc[-2]
     perc_change = ((price - prev_price)/prev_price)*100
@@ -121,8 +119,7 @@ def analyze(symbol, interval="1h"):
 def get_top_movers(interval):
     if interval in ["15m", "1h"]:
         data = requests.get(ALL_COINS_URL, timeout=10).json()
-        df = pd.DataFrame(data)
-        df = df.sort_values("quoteVolume", ascending=False).head(50)
+        df = pd.DataFrame(data).sort_values("quoteVolume", ascending=False).head(50)
         movers = []
         for sym in df["symbol"]:
             k = get_klines(sym, interval, 2)
@@ -177,114 +174,73 @@ def coins_list_menu(prefix):
     kb.row(types.InlineKeyboardButton("🔙 Back", callback_data="back_main"))
     return kb
 
-# === HANDLERS ===
-@bot.message_handler(commands=["start"])
-def start(msg):
-    bot.send_message(msg.chat.id, "Welcome to SaahilCryptoBot 🚀", reply_markup=main_menu())
-
-@bot.message_handler(func=lambda m: m.text == "📊 My Coins")
-def my_coins(msg):
-    coins = load_coins()
-    if not coins:
-        bot.send_message(msg.chat.id, "No coins added yet. Use ➕ Add Coin first.")
-        return
-    bot.send_message(msg.chat.id, "Select a coin for technical analysis:", reply_markup=coins_list_menu("tech"))
-
-@bot.message_handler(func=lambda m: m.text == "➕ Add Coin")
-def add_coin(msg):
-    bot.send_message(msg.chat.id, "Type the coin symbol to add (e.g., BTCUSDT):")
-    bot.register_next_step_handler(msg, save_coin)
-
-def save_coin(msg):
-    coin = msg.text.strip().upper()
-    coins = load_coins()
-    if coin in coins:
-        bot.send_message(msg.chat.id, f"{coin} is already in your list.")
-        return
-    coins.append(coin)
-    save_coins(coins)
-    bot.send_message(msg.chat.id, f"{coin} added successfully.", reply_markup=main_menu())
-
-@bot.message_handler(func=lambda m: m.text == "➖ Remove Coin")
-def remove_coin(msg):
-    coins = load_coins()
-    if not coins:
-        bot.send_message(msg.chat.id, "No coins to remove.")
-        return
-    bot.send_message(msg.chat.id, "Select a coin to remove:", reply_markup=coins_list_menu("remove"))
-
-@bot.message_handler(func=lambda m: m.text == "🚀 Top Movers")
-def top_movers(msg):
-    bot.send_message(msg.chat.id, "Select timeframe:", reply_markup=movers_menu())
-
-@bot.message_handler(func=lambda m: m.text == "🤖 Auto Signals")
-def auto_signals(msg):
-    bot.send_message(msg.chat.id, "Select timeframe for auto signals:", reply_markup=timeframe_menu("auto"))
-
 # === CALLBACK HANDLER ===
 @bot.callback_query_handler(func=lambda c: True)
 def callback_handler(call):
     data = call.data
+
     if data == "back_main":
         bot.send_message(call.message.chat.id, "Back to main menu", reply_markup=main_menu())
+        return
 
-    elif data.startswith("tech_") and len(data.split("_"))==2:
-        coin = data.split("_")[1]
-        bot.send_message(call.message.chat.id, f"Select timeframe for {coin}:", reply_markup=timeframe_menu("tech", coin))
+    if data.startswith("tech_"):
+        parts = data.split("_")
+        if len(parts) == 2:
+            coin = parts[1]
+            bot.send_message(call.message.chat.id, f"Select timeframe for {coin}:", reply_markup=timeframe_menu("tech", coin))
+        elif len(parts) == 3:
+            _, coin, tf = parts
+            result = analyze(coin, tf)
+            if result:
+                text = f"⏰ Timeframe: {tf}\n🪙 Coin: {coin} | ${result['price']} | {result['perc_change']}%\n\n{result['emoji']} Direction Bias: {result['signal']}\n\nℹ️ {result['explanation']}"
+                bot.send_message(call.message.chat.id, text)
+            else:
+                bot.send_message(call.message.chat.id, f"Failed to fetch data for {coin}.")
+        return
 
-    elif data.startswith("tech_") and len(data.split("_"))==3:
-        _, coin, tf = data.split("_")
-        result = analyze(coin, tf)
-        if result:
-            text = (f"⏰ Timeframe: {tf}\n"
-                    f"🪙 Coin: {coin} | ${result['price']} | {result['perc_change']}%\n\n"
-                    f"⚪ Direction Bias: {result['signal']} {result['emoji']}\n\n"
-                    f"ℹ️ {result['explanation']}")
-            bot.send_message(call.message.chat.id, text)
-        else:
-            bot.send_message(call.message.chat.id, f"Failed to fetch data for {coin}.")
-
-    elif data.startswith("remove_"):
+    if data.startswith("remove_"):
         _, coin = data.split("_")
         coins = load_coins()
         if coin in coins:
             coins.remove(coin)
             save_coins(coins)
         bot.send_message(call.message.chat.id, f"{coin} removed.", reply_markup=main_menu())
+        return
 
-    elif data.startswith("movers_"):
+    if data.startswith("movers_"):
         _, tf = data.split("_")
         movers = get_top_movers(tf)
         text = f"📈 Top Movers ({tf})\n\n"
         for sym, chg in movers:
-            text += f"{sym}: {round(chg,2)}%\n"
+            text += f"{sym}: {'🟢' if chg>=0 else '🔴'} {round(chg,2)}%\n"
         bot.send_message(call.message.chat.id, text)
+        return
 
-    elif data.startswith("auto_"):
-        tf = data.split("_")[1]
-        if tf in auto_signal_threads and auto_signal_threads[tf].is_alive():
-            bot.send_message(call.message.chat.id, f"Auto signals already running for {tf}.")
-        else:
-            t = threading.Thread(target=run_auto_signals, args=(call.message.chat.id, tf), daemon=True)
-            auto_signal_threads[tf] = t
-            t.start()
-            bot.send_message(call.message.chat.id, f"Started auto signals for {tf} timeframe.")
+    if data.startswith("auto_"):
+        parts = data.split("_")
+        if len(parts) == 2:
+            tf = parts[1]
+            coins = load_coins()
+            for coin in coins:
+                key = f"{coin}_{tf}"
+                if key in auto_signal_threads and auto_signal_threads[key].is_alive():
+                    bot.send_message(call.message.chat.id, f"Auto signals already running for {coin} {tf}.")
+                else:
+                    t = threading.Thread(target=run_auto_signals, args=(call.message.chat.id, coin, tf), daemon=True)
+                    auto_signal_threads[key] = t
+                    t.start()
+                    bot.send_message(call.message.chat.id, f"Started auto signals for {coin} {tf} timeframe.")
 
 # === AUTO SIGNALS ===
-def run_auto_signals(chat_id, interval):
-    last_signals = {}
-    sleep_time = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400}.get(interval, 60)
+def run_auto_signals(chat_id, coin, interval):
+    last_signal = None
+    sleep_time = {"1m":60, "5m":300, "15m":900, "1h":3600, "1d":86400}.get(interval,60)
     while True:
-        coins = load_coins()
-        for coin in coins:
-            result = analyze(coin, interval)
-            if result and last_signals.get(coin) != result['signal']:
-                text = (f"⏰ Timeframe: {interval}\n"
-                        f"🪙 Coin: {coin} | ${result['price']} | {result['perc_change']}%\n\n"
-                        f"⚪ Direction Bias: {result['signal']} {result['emoji']}\n\n"
-                        f"ℹ️ {result['explanation']}")
-                bot.send_message(chat_id, text)
-                last_signals[coin] = result['signal']
+        result = analyze(coin, interval)
+        if result and last_signal != result['signal']:
+            text = f"⏰ Timeframe: {interval}\n🪙 Coin: {coin} | ${result['price']} | {result['perc_change']}%\n\n{result['emoji']} Direction Bias: {result['signal']}\n\nℹ️ {result['explanation']}"
+            bot.send_message(chat_id, text)
+            last_signal = result['signal']
         time.sleep(sleep_time)
 
 # === WEBHOOK ===
@@ -302,4 +258,3 @@ if __name__ == "__main__":
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
